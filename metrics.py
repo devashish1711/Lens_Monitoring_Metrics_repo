@@ -7,6 +7,7 @@ import re
 import argparse
 import base64
 import json
+import subprocess
 import os
 import sys
 from dataclasses import dataclass, asdict
@@ -498,7 +499,6 @@ class NetworkingCatalog:
     @staticmethod
     def get_tabs(resource_type):
         tab_map = {
-            # 🟢 UPDATED VPC TABS:
             "vpc": [
                 "Overview",
                 "Subnets",
@@ -514,7 +514,13 @@ class NetworkingCatalog:
                 "Alerts",
                 "Delete Subnet",
             ],
-            "firewall": ["Overview", "Configuration", "Alerts"],
+            "firewall": [
+                "Overview",
+                "Configuration",
+                "Traffic Metrics",
+                "Security Insights",
+                "Alerts",
+            ],
             "route": ["Overview", "Configuration"],
             "load_balancer": ["Overview", "Configuration", "Metrics", "Logs", "Alerts"],
             "router": ["Overview", "Configuration", "Metrics", "Alerts"],
@@ -2105,7 +2111,7 @@ def configure_custom_disk_metric() -> Dict[str, Any]:
     }
 
 
-def configure_custom_network_metric() -> Dict[str, Any]:
+def configure_custom_network_metric(creds, project_id, network_name) -> Dict[str, Any]:
     print("\n--- Custom Network Metric Configuration ---")
     alert_name = input("\nEnter alert name:\n> ").strip() or "custom-network-alert"
 
@@ -2143,6 +2149,7 @@ def configure_custom_network_metric() -> Dict[str, Any]:
         },
         "4": {
             "label": "Network Errors",
+            # 👇 CHANGE THIS LINE 👇
             "gcp_metric": 'metric.type="agent.googleapis.com/interface/errors"',
             "unit": "errors/s",
             "transform": "identity",
@@ -2152,6 +2159,76 @@ def configure_custom_network_metric() -> Dict[str, Any]:
     }
 
     selected = metric_map.get(m_type_choice, metric_map["1"])
+
+    # ========================================================
+    # 🟢 NEW FEATURE: FETCH CURRENT BASELINE FOR CONTEXT
+    # ========================================================
+    from google.cloud import monitoring_v3
+    import time
+
+    print(
+        f"\n📊 Fetching recent average for {selected['label']} to help you set a threshold..."
+    )
+    try:
+        client = monitoring_v3.MetricServiceClient(credentials=creds)
+        clean_metric = (
+            selected["gcp_metric"].replace("metric.type=", "").replace('"', "").strip()
+        )
+
+        # Broad filter to grab average across the project/network to give them a baseline
+        filter_str = f'metric.type="{clean_metric}"'
+        now = int(time.time())
+
+        aligner_enum = getattr(monitoring_v3.Aggregation.Aligner, selected["aligner"])
+
+        results = client.list_time_series(
+            request={
+                "name": f"projects/{project_id}",
+                "filter": filter_str,
+                "interval": monitoring_v3.TimeInterval(
+                    {
+                        "end_time": {"seconds": now},
+                        "start_time": {"seconds": now - 3600},  # Look back 1 hour
+                    }
+                ),
+                "aggregation": monitoring_v3.Aggregation(
+                    {
+                        "alignment_period": {"seconds": 3600},  # 1 big 1-hour bucket
+                        "per_series_aligner": aligner_enum,
+                        "cross_series_reducer": monitoring_v3.Aggregation.Reducer.REDUCE_MEAN,
+                    }
+                ),
+            }
+        )
+
+        val = None
+        for ts in results:
+            for p in ts.points:
+                if p.value.HasField("double_value"):
+                    val = p.value.double_value
+                elif p.value.HasField("int64_value"):
+                    val = p.value.int64_value
+                break
+            if val is not None:
+                break
+
+        if val is not None:
+            # If GCP returned Bytes but the user expects MB, reverse the math for display!
+            if selected.get("transform") == "mb_to_bytes":
+                val = val / 1048576.0
+            print(
+                f"✅ Baseline Context: Over the last hour, the average is roughly {val:.2f} {selected['unit']}."
+            )
+        else:
+            print(
+                "⚠️ No active traffic/data found in the last hour to establish a baseline."
+            )
+
+    except Exception as e:
+        print(
+            f"⚠️ Could not fetch live data for context. Proceeding to threshold configuration..."
+        )
+    # ========================================================
 
     print("\nSelect operator:\n1: >\n2: <\n3: >=\n4: <=")
     op_choice = input("> ").strip()
@@ -2176,7 +2253,68 @@ def configure_custom_network_metric() -> Dict[str, Any]:
         "duration_seconds": eval_window,
         "alignment_period": align_period,
         "transform": selected["transform"],
+        "aligner": selected["aligner"],  # 🟢 Ensure this is passed!
+    }
+
+
+def configure_custom_subnet_metric(creds, project_id, subnet_name) -> Dict[str, Any]:
+    print(f"\n--- Subnet Alert Configuration ({subnet_name}) ---")
+    alert_name = input("\nEnter alert name:\n> ").strip() or f"{subnet_name}-alert"
+
+    print("\nEnter metric type:")
+    print("1: High Traffic Volume (Flow Logs)")
+    print("2: High Log Entry Count")
+    m_type_choice = input("> ").strip()
+
+    metric_map = {
+        "1": {
+            "label": "High Traffic Volume",
+            "gcp_metric": f'metric.type="logging.googleapis.com/byte_count" AND resource.type="gce_subnetwork" AND resource.labels.subnetwork_name="{subnet_name}"',
+            "unit": "Bytes/s",
+            "transform": "mb_to_bytes",  # User inputs MB, GCP needs Bytes
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">=",
+            "resource_type": "gce_subnetwork",
+        },
+        "2": {
+            "label": "High Log Entry Count",
+            "gcp_metric": f'metric.type="logging.googleapis.com/log_entry_count" AND resource.type="gce_subnetwork" AND resource.labels.subnetwork_name="{subnet_name}"',
+            "unit": "logs/s",
+            "transform": "identity",
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">=",
+            "resource_type": "gce_subnetwork",
+        },
+    }
+
+    selected = metric_map.get(m_type_choice, metric_map["1"])
+
+    print("\nSelect operator:\n1: >\n2: <\n3: >=\n4: <=")
+    op_choice = input("> ").strip()
+    op_map = {"1": ">", "2": "<", "3": ">=", "4": "<="}
+    operator = op_map.get(op_choice, selected["default_operator"])
+
+    threshold_val = _read_float(
+        f"\nEnter threshold value ({selected['unit'].replace('Bytes', 'MB')}):\n> "
+    )
+    eval_window = _read_int("\nEnter evaluation window (seconds):\n> ", min_value=60)
+    align_period = _read_int("\nEnter alignment period (seconds):\n> ", min_value=60)
+
+    if align_period > eval_window:
+        align_period = eval_window
+
+    return {
+        "alert_name": alert_name,
+        "label": selected["label"],
+        "unit": selected["unit"],
+        "gcp_metric": selected["gcp_metric"],
+        "operator": operator,
+        "threshold_value": threshold_val,
+        "duration_seconds": eval_window,
+        "alignment_period": align_period,
+        "transform": selected["transform"],
         "aligner": selected["aligner"],
+        "resource_type": selected["resource_type"],  # 🟢 Pass explicit resource type
     }
 
 
@@ -2287,126 +2425,231 @@ def handle_networking_navigation(selected_res, cat_key, creds, project_id):
         # Add other tabs here...
 
 
-class NetworkAlertPolicyOrchestrator:
+class NetworkMetricsOrchestrator:
     @staticmethod
-    def create_network_alert_policy(credentials, project_id, network_name, custom_data):
+    def _escape_monitoring_filter_value(value: str) -> str:
+        """Helper to prevent filter syntax errors if names contain quotes/slashes."""
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+
+    @staticmethod
+    def get_firewall_metrics(credentials, project_id, firewall_name, lookback_hours=24):
+        """
+        Tier 1 firewall traffic metrics using Firewall Insights.
+        """
         from google.cloud import monitoring_v3
+        from datetime import datetime, timedelta, timezone
 
-        client = monitoring_v3.AlertPolicyServiceClient(credentials=credentials)
-        project_path = f"projects/{project_id}"
+        client = monitoring_v3.MetricServiceClient(credentials=credentials)
+        project_name = f"projects/{project_id}"
 
-        # 1. Clean the metric string
-        raw_metric = custom_data.get("gcp_metric", "")
-        clean_metric = raw_metric.replace("metric.type=", "").replace('"', "").strip()
+        now = datetime.now(timezone.utc)
+        start = now - timedelta(hours=max(1, int(lookback_hours)))
 
-        # 2. Dynamic Resource Type
-        if "agent.googleapis.com" in clean_metric or "instance/" in clean_metric:
-            res_type = "gce_instance"
-        elif "loadbalancing" in clean_metric:
-            res_type = "https_lb_rule"
-        elif "router" in clean_metric:
-            res_type = "cloud_router"
-        elif "nat" in clean_metric:
-            res_type = "cloud_nat_gateway"
-        else:
-            res_type = "gce_network"
-
-        # 3. 🟢 DYNAMIC ALIGNER FIX
-        # If it's a counter (CUMULATIVE), use ALIGN_RATE. Otherwise use ALIGN_MEAN.
-        # Most network metrics like "connections" or "bytes" are cumulative/delta.
-        if (
-            "count" in clean_metric
-            or "bytes" in clean_metric
-            or "connections" in clean_metric
-        ):
-            aligner = monitoring_v3.Aggregation.Aligner.ALIGN_RATE
-        else:
-            aligner = monitoring_v3.Aggregation.Aligner.ALIGN_MEAN
-
-        filter_str = f'metric.type="{clean_metric}" AND resource.type="{res_type}"'
-
-        operator_str = custom_data.get("operator", ">")
-        threshold_value = float(custom_data.get("threshold_value", 0))
-        duration_sec = int(custom_data.get("duration_seconds", 60))
-        align_sec = int(custom_data.get("alignment_period", 60))
-        policy_display_name = custom_data.get(
-            "alert_name", f"Network Alert: {network_name}"
+        interval = monitoring_v3.TimeInterval(
+            {
+                "end_time": {
+                    "seconds": int(now.timestamp()),
+                    "nanos": now.microsecond * 1000,
+                },
+                "start_time": {
+                    "seconds": int(start.timestamp()),
+                    "nanos": start.microsecond * 1000,
+                },
+            }
         )
 
-        op_map = {
-            ">": monitoring_v3.ComparisonType.COMPARISON_GT,
-            "<": monitoring_v3.ComparisonType.COMPARISON_LT,
-            ">=": monitoring_v3.ComparisonType.COMPARISON_GT,
-            "<=": monitoring_v3.ComparisonType.COMPARISON_LT,
-            "=": monitoring_v3.ComparisonType.COMPARISON_GT,
-        }
+        def _sum_int64_points(series_iter):
+            total = 0
+            found = False
+            for series in series_iter:
+                for point in series.points:
+                    total += int(point.value.int64_value)
+                    found = True
+            return found, total
 
-        condition = monitoring_v3.AlertPolicy.Condition(
-            display_name=f"{network_name} - {policy_display_name}",
-            condition_threshold=monitoring_v3.AlertPolicy.Condition.MetricThreshold(
-                filter=filter_str,
-                comparison=op_map.get(
-                    operator_str, monitoring_v3.ComparisonType.COMPARISON_GT
-                ),
-                threshold_value=threshold_value,
-                duration={"seconds": duration_sec},
-                aggregations=[
-                    monitoring_v3.Aggregation(
-                        alignment_period={"seconds": align_sec},
-                        per_series_aligner=aligner,  # 🟢 Uses dynamic aligner here
+        def _latest_int64_point(series_iter):
+            latest_ts = None
+            latest_value = None
+
+            for series in series_iter:
+                for point in series.points:
+                    end_time = point.interval.end_time
+                    point_ts = datetime.fromtimestamp(
+                        end_time.timestamp(), tz=timezone.utc
                     )
-                ],
-            ),
-        )
+                    value = int(point.value.int64_value)
 
-        policy = monitoring_v3.AlertPolicy(
-            display_name=policy_display_name,
-            combiner=monitoring_v3.AlertPolicy.ConditionCombinerType.OR,
-            conditions=[condition],
-        )
+                    if latest_ts is None or point_ts > latest_ts:
+                        latest_ts = point_ts
+                        latest_value = value
 
-        return client.create_alert_policy(name=project_path, alert_policy=policy)
+            return latest_ts, latest_value
 
-    @staticmethod
-    def list_network_alerts(credentials, project_id, network_name):
-        from google.cloud import monitoring_v3
-
-        client = monitoring_v3.AlertPolicyServiceClient(credentials=credentials)
-        project_path = f"projects/{project_id}"
-
-        results = []
         try:
-            policies = client.list_alert_policies(name=project_path)
+            # 🟢 Apply the safety escape!
+            safe_firewall_name = (
+                NetworkMetricsOrchestrator._escape_monitoring_filter_value(
+                    firewall_name
+                )
+            )
 
-            print(f"\nDEBUG: Searching for alerts related to '{network_name}'...")
+            # 1) Hit count over requested lookback window
+            hit_filter = (
+                'metric.type="firewallinsights.googleapis.com/subnet/firewall_hit_count" '
+                f'AND metric.labels.firewall_name="{safe_firewall_name}"'
+            )
 
-            for policy in policies:
-                # Print every policy name we find so we can debug the match
-                # print(f"DEBUG: Checking policy: {policy.display_name}")
+            hit_iter = client.list_time_series(
+                request={
+                    "name": project_name,
+                    "filter": hit_filter,
+                    "interval": interval,
+                    "view": monitoring_v3.ListTimeSeriesRequest.TimeSeriesView.FULL,
+                }
+            )
 
-                # Check for a match (ignoring case)
-                if (
-                    network_name.lower() in policy.display_name.lower()
-                    or "dev" in policy.display_name.lower()
-                ):
-                    condition = (
-                        policy.conditions[0].condition_threshold
-                        if policy.conditions
-                        else None
-                    )
-                    metric_filter = condition.filter if condition else "Unknown Metric"
+            hits_found, total_hits = _sum_int64_points(hit_iter)
 
-                    results.append(
-                        {
-                            "Alert Name": policy.display_name,
-                            "Status": "✅ Enabled" if policy.enabled else "⏸️ Disabled",
-                            "Metric Filter": metric_filter,
-                        }
-                    )
+            # 2) Last used timestamp
+            last_used_start = now - timedelta(days=7)
+            last_used_interval = monitoring_v3.TimeInterval(
+                {
+                    "end_time": {
+                        "seconds": int(now.timestamp()),
+                        "nanos": now.microsecond * 1000,
+                    },
+                    "start_time": {
+                        "seconds": int(last_used_start.timestamp()),
+                        "nanos": last_used_start.microsecond * 1000,
+                    },
+                }
+            )
+
+            last_used_filter = (
+                'metric.type="firewallinsights.googleapis.com/subnet/firewall_last_used_timestamp" '
+                f'AND metric.labels.firewall_name="{safe_firewall_name}"'
+            )
+
+            last_used_iter = client.list_time_series(
+                request={
+                    "name": project_name,
+                    "filter": last_used_filter,
+                    "interval": last_used_interval,
+                    "view": monitoring_v3.ListTimeSeriesRequest.TimeSeriesView.FULL,
+                }
+            )
+
+            _, last_used_epoch = _latest_int64_point(last_used_iter)
+
+            last_used_readable = None
+            if last_used_epoch:
+                last_used_dt = datetime.fromtimestamp(last_used_epoch, tz=timezone.utc)
+                last_used_readable = last_used_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+            if not hits_found and not last_used_epoch:
+                return {
+                    "status": "no_data",
+                    "data": {
+                        "lookback_hours": lookback_hours,
+                        "total_hits": 0,
+                        "last_used_epoch": None,
+                        "last_used_readable": None,
+                    },
+                    "message": (
+                        "⚠️ No Firewall Insights metric points were returned for this rule "
+                        f"in the selected window ({lookback_hours}h). "
+                        "This can mean no recent TCP/UDP hits, logging was enabled only recently, "
+                        "or data is not yet visible in Monitoring."
+                    ),
+                }
+
+            return {
+                "status": "success",
+                "data": {
+                    "lookback_hours": lookback_hours,
+                    "total_hits": total_hits,
+                    "last_used_epoch": last_used_epoch,
+                    "last_used_readable": last_used_readable,
+                },
+                "message": "ok",
+            }
+
         except Exception as e:
-            return [{"error": f"Failed to fetch alerts: {e}"}]
+            return {
+                "status": "error",
+                "data": None,
+                "message": f"❌ Failed to fetch Firewall Insights metrics: {e}",
+            }
 
-        return results
+    @staticmethod
+    def get_subnet_metrics(credentials, project_id, subnet_name):
+        from google.cloud import monitoring_v3
+        import time
+
+        client = monitoring_v3.MetricServiceClient(credentials=credentials)
+        now = int(time.time())
+
+        # 🟢 Apply the safety escape here too!
+        safe_subnet_name = NetworkMetricsOrchestrator._escape_monitoring_filter_value(
+            subnet_name
+        )
+
+        filter_str = (
+            f'metric.type="logging.googleapis.com/byte_count" AND '
+            f'resource.type="gce_subnetwork" AND '
+            f'resource.labels.subnetwork_name="{safe_subnet_name}"'
+        )
+
+        try:
+            results = client.list_time_series(
+                request={
+                    "name": f"projects/{project_id}",
+                    "filter": filter_str,
+                    "interval": monitoring_v3.TimeInterval(
+                        {
+                            "end_time": {"seconds": now},
+                            "start_time": {"seconds": now - 3600},
+                        }
+                    ),
+                    "aggregation": monitoring_v3.Aggregation(
+                        {
+                            "alignment_period": {"seconds": 3600},
+                            "per_series_aligner": monitoring_v3.Aggregation.Aligner.ALIGN_RATE,
+                            "cross_series_reducer": monitoring_v3.Aggregation.Reducer.REDUCE_SUM,
+                        }
+                    ),
+                }
+            )
+
+            val = 0
+            for ts in results:
+                for p in ts.points:
+                    val += p.value.double_value
+                    val += p.value.int64_value
+
+            # 🟢 Now returning structural data alongside the string message!
+            if val > 0:
+                mb_s = val / 1048576.0
+                return {
+                    "status": "success",
+                    "data": {
+                        "traffic_mb_per_sec": round(mb_s, 2),
+                        "window_hours": 1,
+                    },
+                    "message": f"📊 Average Flow Log Traffic over last hour: {mb_s:.2f} MB/s",
+                }
+            else:
+                return {
+                    "status": "empty",
+                    "data": {
+                        "traffic_mb_per_sec": 0.0,
+                        "window_hours": 1,
+                    },
+                    "message": "⚠️ No flow log metric data found for this subnet.",
+                }
+
+        except Exception as e:
+            return {"status": "error", "message": f"❌ Failed to fetch metrics: {e}"}
 
 
 def choose_operator_interactive() -> Optional[str]:
@@ -2572,6 +2815,154 @@ def show_vpc_connectivity(selected_vpc, creds, project_id):
             )
 
     print("=" * 70)
+
+
+def auto_enable_flow_logs(subnet_name, region, project_id):  # 🟢 ADDED project_id here
+    if not region or region == "N/A":
+        region = input(
+            f"Enter the region for {subnet_name} (e.g., us-central1): "
+        ).strip()
+
+    print("\n" + "-" * 60)
+    print(f"🔧 AUTO-FIX: Enabling VPC Flow Logs for {subnet_name} in {region}...")
+
+    gcloud_exec = "gcloud.cmd" if os.name == "nt" else "gcloud"
+
+    cmd = [
+        gcloud_exec,
+        "compute",
+        "networks",
+        "subnets",
+        "update",
+        subnet_name,
+        "--region",
+        region,
+        "--project",
+        project_id,  # 🟢 THE FIX: Tell gcloud exactly which project to use!
+        "--enable-flow-logs",
+    ]
+
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True, shell=True)
+        print("✅ SUCCESS: VPC Flow Logs are now enabled!")
+        print(
+            "💡 NOTE: It takes 5-10 minutes for GCP to generate enough traffic to create the metric. Alerts might fail until then."
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Failed to enable flow logs via CLI.\nError details: {e.stderr}")
+    except FileNotFoundError:
+        print(f"❌ ERROR: Could not find the Google Cloud SDK.")
+        print(
+            "Please ensure 'gcloud' is installed and added to your Windows system PATH."
+        )
+
+
+def configure_custom_firewall_metric(creds, project_id, firewall_name):
+    print(f"\n--- Firewall Alert Configuration ({firewall_name}) ---")
+    print(
+        "⚠️ NOTE: Firewall alerts require 'Firewall Rules Logging' to be enabled in GCP."
+    )
+    alert_name = input("\nEnter alert name:\n> ").strip() or f"{firewall_name}-alert"
+
+    print("\nEnter metric type:")
+    print("1: Rule Hit Count (Overall Traffic)")
+    print("2: Allowed Traffic Count (Spike Detection)")
+    print("3: Denied Traffic Count (Brute Force Detection)")
+    m_type_choice = input("> ").strip()
+
+    # Mapping to exact GCP Firewall Log Metrics
+    metric_map = {
+        "1": {
+            "label": "Rule Hit Count",
+            "gcp_metric": f'metric.type="logging.googleapis.com/log_entry_count" AND resource.type="gce_subnetwork" AND metric.labels.firewall_name="{firewall_name}"',
+            "unit": "hits/s",
+            "transform": "identity",
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">=",
+            "resource_type": "gce_subnetwork",
+        },
+        "2": {
+            "label": "Allowed Traffic Count",
+            "gcp_metric": f'metric.type="logging.googleapis.com/log_entry_count" AND resource.type="gce_subnetwork" AND metric.labels.firewall_name="{firewall_name}" AND metric.labels.disposition="ALLOWED"',
+            "unit": "hits/s",
+            "transform": "identity",
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">",
+            "resource_type": "gce_subnetwork",
+        },
+        "3": {
+            "label": "Denied Traffic Count",
+            "gcp_metric": f'metric.type="logging.googleapis.com/log_entry_count" AND resource.type="gce_subnetwork" AND metric.labels.firewall_name="{firewall_name}" AND metric.labels.disposition="DENIED"',
+            "unit": "hits/s",
+            "transform": "identity",
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">",
+            "resource_type": "gce_subnetwork",
+        },
+    }
+
+    selected = metric_map.get(m_type_choice, metric_map["1"])
+
+    print("\nSelect operator:\n1: >\n2: <\n3: >=\n4: <=")
+    op_choice = input("> ").strip()
+    op_map = {"1": ">", "2": "<", "3": ">=", "4": "<="}
+    operator = op_map.get(op_choice, selected["default_operator"])
+
+    threshold_val = float(
+        input(f"\nEnter threshold value ({selected['unit']}):\n> ").strip() or "100"
+    )
+    eval_window = int(
+        input("\nEnter evaluation window (seconds, min 60):\n> ").strip() or "60"
+    )
+    align_period = int(
+        input("\nEnter alignment period (seconds, min 60):\n> ").strip() or "60"
+    )
+
+    if align_period > eval_window:
+        align_period = eval_window
+
+    return {
+        "alert_name": alert_name,
+        "label": selected["label"],
+        "unit": selected["unit"],
+        "gcp_metric": selected["gcp_metric"],
+        "operator": operator,
+        "threshold_value": threshold_val,
+        "duration_seconds": eval_window,
+        "alignment_period": align_period,
+        "transform": selected["transform"],
+        "aligner": selected["aligner"],
+        "resource_type": selected["resource_type"],
+    }
+
+
+def get_tabs_for_category(cat_key):
+    if cat_key == "vm":
+        return ["Overview", "CPU", "Memory", "Disk", "Network", "Processes", "Alerts"]
+    elif cat_key == "gke":
+        return ["Overview", "Nodes", "Workloads", "Networking", "Alerts"]
+    elif cat_key == "database":
+        return ["Overview", "Configuration", "Performance", "Connections", "Alerts"]
+    elif cat_key == "firewall":
+        return [
+            "Overview",
+            "Configuration",
+            "Traffic Metrics",
+            "Security Insights",
+            "Alerts",
+        ]
+    elif cat_key == "subnet":
+        return ["Overview", "Configuration", "Metrics", "Alerts"]
+    elif cat_key == "route":
+        return ["Overview", "Configuration", "Alerts"]
+    elif cat_key == "load_balancer":
+        return ["Overview", "Configuration", "Backend Health", "Traffic", "Alerts"]
+    elif cat_key == "router":
+        return ["Overview", "Configuration", "BGP Status", "Alerts"]
+    elif cat_key == "nat":
+        return ["Overview", "Configuration", "Port Usage", "Alerts"]
+    else:
+        return ["Overview", "Configuration", "Alerts"]
 
 
 def main() -> int:
@@ -2841,12 +3232,45 @@ def main() -> int:
                             print("\n" + "=" * 60)
                             print(f"📊 SUBNET METRICS: {selected_res.name}")
                             print("=" * 60)
-                            print("Subnet-level metrics are not wired yet.")
-                            print("Recommended future metrics:")
-                            print("- Bytes sent/received via resources in this subnet")
-                            print("- Flow logs volume")
-                            print("- Private Google Access usage")
-                            print("- NAT usage if subnet is NAT-enabled")
+                            print("Fetching recent Network Traffic for this Subnet...")
+
+                            metrics_data = (
+                                NetworkMetricsOrchestrator.get_subnet_metrics(
+                                    creds, project_id, selected_res.name
+                                )
+                            )
+                            print(f"\n{metrics_data['message']}")
+
+                            # 🟢 CHANGED: Offer to auto-fix if no data is found, BUT remember if we just did it!
+                            if metrics_data["status"] == "empty":
+                                # Check if we already tagged this subnet in the current session
+                                if getattr(
+                                    selected_res, "_flow_logs_just_enabled", False
+                                ):
+                                    print(
+                                        "\n⏳ Flow Logs were just enabled for this subnet! "
+                                        "Please wait 5-10 minutes for Google Cloud to process the traffic data."
+                                    )
+                                else:
+                                    print(
+                                        "\n💡 It looks like VPC Flow Logs are disabled or haven't generated data yet."
+                                    )
+                                    enable_choice = (
+                                        input(
+                                            f"Do you want to automatically enable Flow Logs for {selected_res.name} now? (y/n): "
+                                        )
+                                        .strip()
+                                        .lower()
+                                    )
+                                    if enable_choice == "y":
+                                        auto_enable_flow_logs(
+                                            selected_res.name,
+                                            selected_res.location,
+                                            project_id,
+                                        )
+                                        # 🧠 Give the script a memory! Tag this subnet so we don't ask again.
+                                        selected_res._flow_logs_just_enabled = True
+
                             print("=" * 60)
                             input("\nPress Enter to return to tabs...")
                             continue
@@ -2855,63 +3279,300 @@ def main() -> int:
                             print("\n" + "=" * 60)
                             print(f"🚨 ALERTS FOR SUBNET: {selected_res.name}")
                             print("=" * 60)
-                            print("Subnet alert handling is not wired yet.")
-                            input("\nPress Enter to return to tabs...")
-                            continue
+                            print("1: View Existing Alerts")
+                            print("2: Create New Alert Policy")
 
-                        elif cat_key == "subnet" and selected_tab == "Delete Subnet":
-                            print("\n" + "=" * 60)
-                            print(f"⚠️ DELETE SUBNET: {selected_res.name}")
-                            print("=" * 60)
-                            print(f"Subnet: {selected_res.name}")
-                            print(f"Region: {selected_res.location}")
-                            print(f"VPC:    {selected_res.raw.get('network', 'N/A')}")
-                            print("\nImportant:")
-                            print(
-                                "- Subnet deletion will fail if resources still exist in it."
-                            )
-                            print(
-                                "- Make sure no VM, GKE node, forwarding rule, or reserved IP depends on it."
-                            )
-
-                            confirm = input(
-                                "\nType DELETE to permanently delete this subnet, or press Enter to cancel: "
+                            alert_choice = input(
+                                "\nEnter choice (or press Enter to go back): "
                             ).strip()
+                            if not alert_choice:
+                                continue
 
-                            if confirm == "DELETE":
-                                try:
-                                    result = NetworkingInventory.delete_subnet(
-                                        credentials=creds,
-                                        project_id=project_id,
-                                        region=selected_res.location,
-                                        subnet_name=selected_res.name,
+                            if alert_choice == "1":
+                                print(
+                                    f"\n🔍 Searching GCP for Alerts attached to {selected_res.name}..."
+                                )
+                                # We can reuse the network alert fetcher since it searches by name
+                                alerts = (
+                                    NetworkAlertPolicyOrchestrator.list_network_alerts(
+                                        creds, project_id, selected_res.name
                                     )
+                                )
+                                if not alerts:
+                                    print("No alerts configured for this subnet.")
+                                else:
+                                    print(json.dumps(alerts, indent=2))
+
+                            elif alert_choice == "2":
+                                # 🟢 NEW: Ask to enable flow logs BEFORE creating the alert
+                                print(
+                                    "\n⚠️  GCP requires VPC Flow Logs to be enabled BEFORE you can create a traffic alert."
+                                )
+                                enable_choice = (
+                                    input(
+                                        f"Do you want to verify/enable Flow Logs for {selected_res.name} now? (y/n): "
+                                    )
+                                    .strip()
+                                    .lower()
+                                )
+
+                                if enable_choice == "y":
+                                    auto_enable_flow_logs(
+                                        selected_res.name,
+                                        selected_res.location,
+                                        project_id,
+                                    )
+                                    input(
+                                        "\nPress Enter to continue to Alert Configuration..."
+                                    )
+
+                                # Proceed with existing alert configuration...
+                                custom_data = configure_custom_subnet_metric(
+                                    creds, project_id, selected_res.name
+                                )
+
+                                if custom_data:
+                                    print("\n🚨 SUMMARY: ALERT TO BE CREATED IN GCP")
+                                    print(f"Alert Name: {custom_data['alert_name']}")
+                                    print(f"Metric:     {custom_data['label']}")
                                     print(
-                                        "\n✅ Subnet delete request submitted successfully."
+                                        f"Condition:  {custom_data['operator']} {custom_data['threshold_value']} {custom_data['unit']}"
                                     )
-                                    print(json.dumps(result, indent=2))
-                                except Exception as e:
-                                    print(f"\n❌ Failed to delete subnet: {e}")
-                            else:
-                                print("\nCancelled.")
 
-                            input("\nPress Enter to return to tabs...")
-                            continue
+                                    confirm = (
+                                        input(
+                                            "\nPush this configuration to Google Cloud now? (y/n): "
+                                        )
+                                        .strip()
+                                        .lower()
+                                    )
+                                    if confirm == "y":
+                                        try:
+                                            NetworkAlertPolicyOrchestrator.create_network_alert_policy(
+                                                credentials=creds,
+                                                project_id=project_id,
+                                                network_name=selected_res.name,
+                                                custom_data=custom_data,
+                                            )
+                                            print(
+                                                "\n✅ SUBNET ALERT POLICY CREATED SUCCESSFULLY!"
+                                            )
+                                        except Exception as e:
+                                            print(f"\n❌ Failed to create alert: {e}")
+                                    else:
+                                        print("Cancelled.")
 
                         # --- NETWORKING ROUTING LOGIC (4 TABS) ---
                         if selected_tab == "Overview":
                             print("\n" + "=" * 60)
                             print(f"🌍 OVERVIEW: {selected_res.name}")
                             print("=" * 60)
-                            auto_create = selected_res.raw.get(
-                                "auto_create_subnetworks", "N/A"
-                            )
-                            routing_mode = selected_res.raw.get(
-                                "routing_config", {}
-                            ).get("routing_mode", "N/A")
                             print(f"Project ID:          {project_id}")
-                            print(f"Auto-Create Subnets: {auto_create}")
-                            print(f"Routing Mode:        {routing_mode}")
+
+                            # 🟢 Make Overview dynamic based on what resource we are looking at!
+                            if cat_key == "vpc":
+                                auto_create = selected_res.raw.get(
+                                    "auto_create_subnetworks", "N/A"
+                                )
+                                routing_mode = selected_res.raw.get(
+                                    "routing_config", {}
+                                ).get("routing_mode", "N/A")
+                                print(f"Auto-Create Subnets: {auto_create}")
+                                print(f"Routing Mode:        {routing_mode}")
+
+                            elif cat_key == "firewall":
+                                # 🟢 UPGRADED FIREWALL OVERVIEW
+                                action = (
+                                    "ALLOW" if "allowed" in selected_res.raw else "DENY"
+                                )
+                                log_config = selected_res.raw.get(
+                                    "logConfig", {}
+                                ) or selected_res.raw.get("log_config", {})
+                                logging_enabled = log_config.get("enable", False)
+
+                                print(
+                                    f"Network:             {selected_res.raw.get('network', 'N/A')}"
+                                )
+                                print(
+                                    f"Direction:           {selected_res.raw.get('direction', 'N/A')}"
+                                )
+                                print(f"Action:              {action}")
+                                print(
+                                    f"Priority:            {selected_res.raw.get('priority', 'N/A')}"
+                                )
+                                print(
+                                    f"Logging Enabled:     {'✅ Yes' if logging_enabled else '❌ No'}"
+                                )
+
+                            elif cat_key == "route":
+                                print(
+                                    f"Network:             {selected_res.raw.get('network', 'N/A')}"
+                                )
+                                print(
+                                    f"Dest Range:          {selected_res.raw.get('dest_range', 'N/A')}"
+                                )
+                                print(
+                                    f"Priority:            {selected_res.raw.get('priority', 'N/A')}"
+                                )
+
+                            print("=" * 60)
+                            input("\nPress Enter to return to tabs...")
+                            continue
+
+                        # 🟢 NEW: SECURITY INSIGHTS TAB (Only triggers for Firewalls!)
+                        # 🟢 1. SECURITY INSIGHTS TAB
+                        elif (
+                            selected_tab == "Security Insights"
+                            and cat_key == "firewall"
+                        ):
+                            print("\n" + "=" * 60)
+                            print(f"🛡️ SECURITY INSIGHTS: {selected_res.name}")
+                            print("=" * 60)
+
+                            insights = []
+                            source_ranges = selected_res.raw.get(
+                                "sourceRanges", []
+                            ) or selected_res.raw.get("source_ranges", [])
+                            log_config = selected_res.raw.get(
+                                "logConfig", {}
+                            ) or selected_res.raw.get("log_config", {})
+
+                            # Check for 0.0.0.0/0
+                            if "0.0.0.0/0" in source_ranges:
+                                insights.append(
+                                    "🚨 CRITICAL: Rule is open to the entire internet (0.0.0.0/0)!"
+                                )
+                            else:
+                                insights.append("✅ PASS: Rule is not globally open.")
+
+                            # Check Logging Status
+                            if not log_config.get("enable", False):
+                                insights.append(
+                                    "⚠️ WARNING: Firewall Logging is DISABLED. Traffic hits cannot be monitored."
+                                )
+                            else:
+                                insights.append("✅ PASS: Firewall Logging is ENABLED.")
+
+                            # Check Direction & Priority
+                            if (
+                                selected_res.raw.get("direction") == "EGRESS"
+                                and selected_res.raw.get("priority", 1000) == 1000
+                            ):
+                                insights.append(
+                                    "💡 NOTE: This is a standard EGRESS rule. Ensure it doesn't shadow lower-priority denys."
+                                )
+
+                            for insight in insights:
+                                print(insight)
+
+                            print("=" * 60)
+                            input("\nPress Enter to return to tabs...")
+                            continue
+
+                        # 🟢 2. TRAFFIC METRICS TAB
+                        elif (
+                            selected_tab == "Traffic Metrics" and cat_key == "firewall"
+                        ):
+                            print("\n" + "=" * 60)
+                            print(f"📊 TRAFFIC METRICS: {selected_res.name}")
+                            print("=" * 60)
+
+                            log_config = selected_res.raw.get(
+                                "logConfig", {}
+                            ) or selected_res.raw.get("log_config", {})
+                            if not log_config.get("enable", False):
+                                print(
+                                    "⚠️ Firewall Rules Logging is DISABLED for this rule."
+                                )
+                                print(
+                                    "Firewall Insights metrics are generated only for rules with logging enabled."
+                                )
+                                print(
+                                    "\n💡 TIP: Enable Firewall Rules Logging, wait a few minutes, then check again."
+                                )
+                                print("=" * 60)
+                                input("\nPress Enter to return to tabs...")
+                                continue
+
+                            print("Select time range:")
+                            print("1: Last 1 hour")
+                            print("2: Last 24 hours")
+                            print("3: Last 7 days")
+
+                            range_choice = input(
+                                "\nEnter choice [default: 24h]: "
+                            ).strip()
+                            lookback_hours = 24
+                            if range_choice == "1":
+                                lookback_hours = 1
+                            elif range_choice == "3":
+                                lookback_hours = 168
+
+                            print(
+                                f"\nFetching Firewall Insights metrics for last {lookback_hours} hour(s)..."
+                            )
+
+                            metrics_response = (
+                                NetworkMetricsOrchestrator.get_firewall_metrics(
+                                    creds,
+                                    project_id,
+                                    selected_res.name,
+                                    lookback_hours=lookback_hours,
+                                )
+                            )
+
+                            if metrics_response["status"] == "success":
+                                data = metrics_response["data"]
+                                print("\n--- Firewall Insights ---")
+                                print(
+                                    f"1️⃣ Rule Hit Count ({data['lookback_hours']}h): {data['total_hits']}"
+                                )
+
+                                if data["last_used_readable"]:
+                                    print(
+                                        f"2️⃣ Last Used:                  {data['last_used_readable']}"
+                                    )
+                                else:
+                                    print(
+                                        "2️⃣ Last Used:                  No timestamp available"
+                                    )
+
+                                if data["total_hits"] > 0:
+                                    print(
+                                        "\n💡 INSIGHT: This rule is actively matching traffic."
+                                    )
+                                else:
+                                    print(
+                                        "\n💡 INSIGHT: No hit-count points were returned in this window."
+                                    )
+                                    print(
+                                        "           Treat this as 'no observed recent TCP/UDP hits', not a guaranteed unused rule."
+                                    )
+
+                            elif metrics_response["status"] == "no_data":
+                                print(metrics_response["message"])
+                                print("\n--- Firewall Insights ---")
+                                print(
+                                    "1️⃣ Rule Hit Count:             No metric points returned"
+                                )
+                                print(
+                                    "2️⃣ Last Used:                  No timestamp available"
+                                )
+                                print(
+                                    "\n💡 INSIGHT: This does NOT conclusively prove the rule is unused."
+                                )
+                            else:
+                                print(metrics_response["message"])
+
+                            print("=" * 60)
+                            input("\nPress Enter to return to tabs...")
+                            continue
+                        # 🟢 NEW: Add the missing Configuration handler for non-subnet resources!
+                        elif selected_tab == "Configuration":
+                            print("\n" + "=" * 60)
+                            print(f"⚙️ CONFIGURATION: {selected_res.name}")
+                            print("=" * 60)
+                            print(json.dumps(selected_res.raw, indent=2))
                             print("=" * 60)
                             input("\nPress Enter to return to tabs...")
                             continue
@@ -3090,7 +3751,9 @@ def main() -> int:
                                 print(
                                     f"\n⚙️ Configure Network Alert for {selected_res.name}"
                                 )
-                                custom_data = configure_custom_network_metric()
+                                custom_data = configure_custom_network_metric(
+                                    creds, project_id, selected_res.name
+                                )
 
                                 if custom_data:
                                     print("\n🚨 SUMMARY: ALERT TO BE CREATED IN GCP")
@@ -3280,11 +3943,11 @@ def main() -> int:
                             metric_cfg["cross_series_reducer"] = custom_data[
                                 "cross_series_reducer"
                             ]
-                        operator, threshold_value, duration_seconds = (
-                            custom_data["operator"],
-                            custom_data["threshold_value"],
-                            custom_data["duration_seconds"],
-                        )
+
+                        # 🟢 FIX: Moved these INSIDE the if-block!
+                        operator = custom_data["operator"]
+                        threshold_value = custom_data["threshold_value"]
+                        duration_seconds = custom_data["duration_seconds"]
 
                     # --- 🚨 FINAL SUMMARY AND PUSH TO GCP 🚨 ---
                     print("\n" + "=" * 50)
