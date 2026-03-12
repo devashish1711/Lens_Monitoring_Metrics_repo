@@ -313,28 +313,28 @@ VM_MONITORING_CATALOG = {
             },
             "disk_read_latency": {
                 "label": "Disk Read Latency",
-                "description": "Time taken for disk read operations.",
+                "description": "Time taken for disk read operations. (Requires Ops Agent)",
                 "unit": "ms",
                 "threshold_type": "number",
                 "default_warning": 20,
                 "default_critical": 50,
                 "duration_options": [60, 300],
-                "gcp_metric": 'metric.type="compute.googleapis.com/instance/disk/read_latencies"',
+                "gcp_metric": 'metric.type="agent.googleapis.com/disk/operation_time" AND metric.labels.direction="read"',
                 "resource_type": 'resource.type="gce_instance"',
-                "aligner": "ALIGN_PERCENTILE_99",
+                "aligner": "ALIGN_RATE",
                 "transform": "identity",
             },
             "disk_write_latency": {
                 "label": "Disk Write Latency",
-                "description": "Time taken for disk write operations.",
+                "description": "Time taken for disk write operations. (Requires Ops Agent)",
                 "unit": "ms",
                 "threshold_type": "number",
                 "default_warning": 20,
                 "default_critical": 50,
                 "duration_options": [60, 300],
-                "gcp_metric": 'metric.type="compute.googleapis.com/instance/disk/write_latencies"',
+                "gcp_metric": 'metric.type="agent.googleapis.com/disk/operation_time" AND metric.labels.direction="write"',
                 "resource_type": 'resource.type="gce_instance"',
-                "aligner": "ALIGN_PERCENTILE_99",
+                "aligner": "ALIGN_RATE",
                 "transform": "identity",
             },
             "custom_disk": {
@@ -497,7 +497,7 @@ VM_MONITORING_CATALOG = {
 
 class NetworkingCatalog:
     @staticmethod
-    def get_tabs(resource_type):
+    def get_tabs(category_key: str) -> List[str]:
         tab_map = {
             "vpc": [
                 "Overview",
@@ -511,8 +511,8 @@ class NetworkingCatalog:
                 "Overview",
                 "Configuration",
                 "Metrics",
+                "Flow Logs",  # 🟢 Replaced Delete Subnet
                 "Alerts",
-                "Delete Subnet",
             ],
             "firewall": [
                 "Overview",
@@ -521,12 +521,37 @@ class NetworkingCatalog:
                 "Security Insights",
                 "Alerts",
             ],
-            "route": ["Overview", "Configuration"],
-            "load_balancer": ["Overview", "Configuration", "Metrics", "Logs", "Alerts"],
-            "router": ["Overview", "Configuration", "Metrics", "Alerts"],
-            "nat": ["Overview", "Configuration", "Metrics", "Logs", "Alerts"],
+            "route": [
+                "Overview",
+                "Configuration",
+                "Dependencies",
+                "Health Checks",
+            ],
+            "load_balancer": [
+                "Overview",
+                "Configuration",
+                "Backend Health",
+                "Metrics",
+                "Logs",
+                "Alerts",
+            ],
+            "router": [
+                "Overview",
+                "Configuration",
+                "BGP Sessions",
+                "Metrics",
+                "Logs",  # 🟢 Added Logs
+                "Alerts",
+            ],
+            "nat": [
+                "Overview",
+                "Configuration",
+                "Metrics",
+                "Logs",
+                "Alerts",
+            ],
         }
-        return tab_map.get(resource_type, ["Overview"])
+        return tab_map.get(category_key, ["Overview", "Configuration"])
 
 
 class AuthManager:
@@ -862,9 +887,15 @@ class NetworkingInventory:
                         "dest_range": getattr(route, "dest_range", None),
                         "priority": getattr(route, "priority", None),
                         "tags": list(route.tags or []),
-                        "next_hop": route.next_hop_gateway
-                        or route.next_hop_ip
-                        or "N/A",
+                        "next_hop": (
+                            getattr(route, "next_hop_gateway", None)
+                            or getattr(route, "next_hop_ip", None)
+                            or getattr(route, "next_hop_instance", None)
+                            or getattr(route, "next_hop_peering", None)
+                            or getattr(route, "next_hop_network", None)
+                            or getattr(route, "next_hop_vpn_tunnel", None)
+                            or "N/A"
+                        ),
                     },
                 )
             )
@@ -1110,6 +1141,117 @@ class ObservabilityCatalog:
             else:
                 return ["Traffic Details", "Logs"]
         return ["CPU"]
+
+
+class NetworkAlertPolicyOrchestrator:
+    """
+    Handles viewing and creating GCP Alert Policies for Networking resources (VPCs, Subnets, Firewalls).
+    """
+
+    @staticmethod
+    def list_network_alerts(
+        credentials: Credentials, project_id: str, network_name: str
+    ) -> List[Dict]:
+        if monitoring_v3 is None:
+            raise RuntimeError(
+                "Missing google-cloud-monitoring. Install: pip install google-cloud-monitoring"
+            )
+
+        client = monitoring_v3.AlertPolicyServiceClient(credentials=credentials)
+        project_name = f"projects/{project_id}"
+
+        try:
+            policies = client.list_alert_policies(name=project_name)
+        except Exception as e:
+            print(f"Failed to fetch alert policies: {e}")
+            return []
+
+        network_policies = []
+        for policy in policies:
+            # Check if this policy's filter explicitly mentions the network/subnet/firewall name
+            for condition in policy.conditions:
+                if (
+                    condition.condition_threshold
+                    and network_name in condition.condition_threshold.filter
+                ):
+                    network_policies.append(
+                        {
+                            "name": policy.display_name,
+                            "enabled": policy.enabled,
+                            "id": policy.name.split("/")[-1],
+                        }
+                    )
+                    break  # Only add it once per policy
+
+        return network_policies
+
+    @staticmethod
+    def create_network_alert_policy(
+        credentials: Credentials,
+        project_id: str,
+        network_name: str,
+        custom_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
+        if monitoring_v3 is None or duration_pb2 is None:
+            raise RuntimeError(
+                "Missing dependencies. Install: pip install google-cloud-monitoring protobuf"
+            )
+
+        client = monitoring_v3.AlertPolicyServiceClient(credentials=credentials)
+        project_name = f"projects/{project_id}"
+
+        # 1. Transform threshold (e.g., MB to Bytes if needed by GCP API)
+        transformed_threshold = custom_data["threshold_value"]
+        if custom_data.get("transform") == "mb_to_bytes":
+            transformed_threshold *= 1048576.0
+
+        # 2. Setup Aggregations
+        agg_args = {
+            "alignment_period": duration_pb2.Duration(
+                seconds=custom_data.get("alignment_period", 60)
+            ),
+            "per_series_aligner": VmAlertPolicyOrchestrator._aligner_enum(
+                custom_data.get("aligner", "ALIGN_MEAN")
+            ),
+        }
+        aggregations = [monitoring_v3.Aggregation(**agg_args)]
+
+        # 3. Build the Metric Condition
+        condition = monitoring_v3.AlertPolicy.Condition(
+            display_name=f"{custom_data['label']} condition",
+            condition_threshold=monitoring_v3.AlertPolicy.Condition.MetricThreshold(
+                filter=custom_data[
+                    "gcp_metric"
+                ],  # The specific filter string built in the interactive menus
+                comparison=VmAlertPolicyOrchestrator._comparison_enum(
+                    custom_data["operator"]
+                ),
+                threshold_value=transformed_threshold,
+                duration=duration_pb2.Duration(seconds=custom_data["duration_seconds"]),
+                aggregations=aggregations,
+                trigger=monitoring_v3.AlertPolicy.Condition.Trigger(count=1),
+            ),
+        )
+
+        # 4. Build and Push the Alert Policy
+        policy = monitoring_v3.AlertPolicy(
+            display_name=custom_data["alert_name"],
+            combiner=monitoring_v3.AlertPolicy.ConditionCombinerType.AND,
+            conditions=[condition],
+            enabled=True,
+            documentation=monitoring_v3.AlertPolicy.Documentation(
+                content=f"Created by Lens CLI\nResource: {network_name}\nMetric: {custom_data['label']}",
+                mime_type="text/markdown",
+            ),
+        )
+
+        created = client.create_alert_policy(name=project_name, alert_policy=policy)
+
+        return {
+            "message": "Alert policy created successfully",
+            "policy_name": created.name,
+        }
 
 
 class VmMonitoringCatalog:
@@ -1874,13 +2016,15 @@ def configure_custom_cpu_metric() -> Dict[str, Any]:
                 "CPU Utilization",
             ),
             "2": (
-                'metric.type="agent.googleapis.com/cpu/idle"',
+                # 🟢 FIX: Use the utilization metric and filter for the 'idle' state
+                'metric.type="agent.googleapis.com/cpu/utilization" AND metric.labels.state="idle"',
                 "%",
                 "identity",
                 "CPU Idle",
             ),
             "4": (
-                'metric.type="agent.googleapis.com/cpu/steal_time"',
+                # 🟢 FIX: Use the utilization metric and filter for the 'steal' state
+                'metric.type="agent.googleapis.com/cpu/utilization" AND metric.labels.state="steal"',
                 "%",
                 "identity",
                 "CPU Steal Time",
@@ -2113,7 +2257,7 @@ def configure_custom_disk_metric() -> Dict[str, Any]:
 
 def configure_custom_network_metric(creds, project_id, network_name) -> Dict[str, Any]:
     print("\n--- Custom Network Metric Configuration ---")
-    alert_name = input("\nEnter alert name:\n> ").strip() or "custom-network-alert"
+    alert_name = input("\nEnter alert name:\n> ").strip() or f"{network_name}-alert"
 
     print("\nEnter metric type:")
     print("1: Network In (MB/s)")
@@ -2122,10 +2266,12 @@ def configure_custom_network_metric(creds, project_id, network_name) -> Dict[str
     print("4: Network Errors (errors/s)")
     m_type_choice = input("> ").strip()
 
+    # 🟢 FIX 1: Added resource.type="gce_instance" to satisfy the GCP API requirement
+    # 🟢 FIX 2: Added metadata.system_labels.network so it only alerts for THIS specific VPC!
     metric_map = {
         "1": {
             "label": "Network Incoming",
-            "gcp_metric": 'metric.type="compute.googleapis.com/instance/network/received_bytes_count"',
+            "gcp_metric": f'metric.type="compute.googleapis.com/instance/network/received_bytes_count" AND resource.type="gce_instance" AND metadata.system_labels.network="{network_name}"',
             "unit": "MB/s",
             "transform": "mb_to_bytes",
             "aligner": "ALIGN_RATE",
@@ -2133,7 +2279,7 @@ def configure_custom_network_metric(creds, project_id, network_name) -> Dict[str
         },
         "2": {
             "label": "Network Outgoing",
-            "gcp_metric": 'metric.type="compute.googleapis.com/instance/network/sent_bytes_count"',
+            "gcp_metric": f'metric.type="compute.googleapis.com/instance/network/sent_bytes_count" AND resource.type="gce_instance" AND metadata.system_labels.network="{network_name}"',
             "unit": "MB/s",
             "transform": "mb_to_bytes",
             "aligner": "ALIGN_RATE",
@@ -2141,7 +2287,7 @@ def configure_custom_network_metric(creds, project_id, network_name) -> Dict[str
         },
         "3": {
             "label": "TCP Connections",
-            "gcp_metric": 'metric.type="agent.googleapis.com/network/tcp_connections"',
+            "gcp_metric": f'metric.type="agent.googleapis.com/network/tcp_connections" AND resource.type="gce_instance" AND metadata.system_labels.network="{network_name}"',
             "unit": "connections",
             "transform": "identity",
             "aligner": "ALIGN_MEAN",
@@ -2149,8 +2295,7 @@ def configure_custom_network_metric(creds, project_id, network_name) -> Dict[str
         },
         "4": {
             "label": "Network Errors",
-            # 👇 CHANGE THIS LINE 👇
-            "gcp_metric": 'metric.type="agent.googleapis.com/interface/errors"',
+            "gcp_metric": f'metric.type="agent.googleapis.com/interface/errors" AND resource.type="gce_instance" AND metadata.system_labels.network="{network_name}"',
             "unit": "errors/s",
             "transform": "identity",
             "aligner": "ALIGN_RATE",
@@ -2161,7 +2306,7 @@ def configure_custom_network_metric(creds, project_id, network_name) -> Dict[str
     selected = metric_map.get(m_type_choice, metric_map["1"])
 
     # ========================================================
-    # 🟢 NEW FEATURE: FETCH CURRENT BASELINE FOR CONTEXT
+    # FETCH CURRENT BASELINE FOR CONTEXT
     # ========================================================
     from google.cloud import monitoring_v3
     import time
@@ -2171,12 +2316,10 @@ def configure_custom_network_metric(creds, project_id, network_name) -> Dict[str
     )
     try:
         client = monitoring_v3.MetricServiceClient(credentials=creds)
-        clean_metric = (
-            selected["gcp_metric"].replace("metric.type=", "").replace('"', "").strip()
-        )
 
-        # Broad filter to grab average across the project/network to give them a baseline
-        filter_str = f'metric.type="{clean_metric}"'
+        # 🟢 FIX 3: Replaced the brittle string-replacement logic.
+        # We now pass the exact, fully-formed filter directly to the API.
+        filter_str = selected["gcp_metric"]
         now = int(time.time())
 
         aligner_enum = getattr(monitoring_v3.Aggregation.Aligner, selected["aligner"])
@@ -2213,7 +2356,6 @@ def configure_custom_network_metric(creds, project_id, network_name) -> Dict[str
                 break
 
         if val is not None:
-            # If GCP returned Bytes but the user expects MB, reverse the math for display!
             if selected.get("transform") == "mb_to_bytes":
                 val = val / 1048576.0
             print(
@@ -2253,7 +2395,7 @@ def configure_custom_network_metric(creds, project_id, network_name) -> Dict[str
         "duration_seconds": eval_window,
         "alignment_period": align_period,
         "transform": selected["transform"],
-        "aligner": selected["aligner"],  # 🟢 Ensure this is passed!
+        "aligner": selected["aligner"],
     }
 
 
@@ -2817,44 +2959,39 @@ def show_vpc_connectivity(selected_vpc, creds, project_id):
     print("=" * 70)
 
 
-def auto_enable_flow_logs(subnet_name, region, project_id):  # 🟢 ADDED project_id here
-    if not region or region == "N/A":
-        region = input(
-            f"Enter the region for {subnet_name} (e.g., us-central1): "
-        ).strip()
+def auto_enable_firewall_logging(creds, project_id, firewall_name) -> bool:
+    from google.cloud import compute_v1
 
     print("\n" + "-" * 60)
-    print(f"🔧 AUTO-FIX: Enabling VPC Flow Logs for {subnet_name} in {region}...")
-
-    gcloud_exec = "gcloud.cmd" if os.name == "nt" else "gcloud"
-
-    cmd = [
-        gcloud_exec,
-        "compute",
-        "networks",
-        "subnets",
-        "update",
-        subnet_name,
-        "--region",
-        region,
-        "--project",
-        project_id,  # 🟢 THE FIX: Tell gcloud exactly which project to use!
-        "--enable-flow-logs",
-    ]
+    print(f"🔧 AUTO-FIX: Enabling Firewall Logging for {firewall_name} via API...")
 
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True, shell=True)
-        print("✅ SUCCESS: VPC Flow Logs are now enabled!")
-        print(
-            "💡 NOTE: It takes 5-10 minutes for GCP to generate enough traffic to create the metric. Alerts might fail until then."
+        client = compute_v1.FirewallsClient(credentials=creds)
+
+        # 1. Fetch current firewall rule
+        fw = client.get(project=project_id, firewall=firewall_name)
+
+        # 2. Simply enable logging on the fetched object
+        if not fw.log_config:
+            fw.log_config = compute_v1.FirewallLogConfig()
+        fw.log_config.enable = True
+
+        # 3. Patch it back
+        client.patch(
+            project=project_id,
+            firewall=firewall_name,
+            firewall_resource=fw,
         )
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Failed to enable flow logs via CLI.\nError details: {e.stderr}")
-    except FileNotFoundError:
-        print(f"❌ ERROR: Could not find the Google Cloud SDK.")
+
+        print("✅ SUCCESS: Firewall Logging is now enabled!")
         print(
-            "Please ensure 'gcloud' is installed and added to your Windows system PATH."
+            "💡 NOTE: It takes a few minutes for traffic metrics to start appearing in GCP."
         )
+        return True
+
+    except Exception as e:
+        print(f"❌ Failed to enable firewall logging via API.\nError details: {e}")
+        return False
 
 
 def configure_custom_firewall_metric(creds, project_id, firewall_name):
@@ -2963,6 +3100,48 @@ def get_tabs_for_category(cat_key):
         return ["Overview", "Configuration", "Port Usage", "Alerts"]
     else:
         return ["Overview", "Configuration", "Alerts"]
+
+
+def auto_enable_flow_logs(creds, subnet_name, region, project_id):
+    from google.cloud import compute_v1
+
+    if not region or region == "N/A":
+        region = input(
+            f"Enter the region for {subnet_name} (e.g., us-central1): "
+        ).strip()
+
+    print("\n" + "-" * 60)
+    print(
+        f"🔧 AUTO-FIX: Enabling VPC Flow Logs for {subnet_name} in {region} via API..."
+    )
+
+    try:
+        client = compute_v1.SubnetworksClient(credentials=creds)
+
+        # 1. Fetch current subnet to get the fingerprint (GCP requires this to prevent overwrite conflicts)
+        subnet = client.get(project=project_id, region=region, subnetwork=subnet_name)
+
+        # 2. Create a minimal patch object with ONLY the fingerprint and the log_config
+        patch_subnet = compute_v1.Subnetwork(
+            fingerprint=subnet.fingerprint,
+            log_config=compute_v1.SubnetworkLogConfig(enable=True),
+        )
+
+        # 3. Patch the subnet
+        client.patch(
+            project=project_id,
+            region=region,
+            subnetwork=subnet_name,
+            subnetwork_resource=patch_subnet,
+        )
+
+        print("✅ SUCCESS: VPC Flow Logs are now enabled!")
+        print(
+            "💡 NOTE: It takes 5-10 minutes for GCP to generate enough traffic to create the metric."
+        )
+
+    except Exception as e:
+        print(f"❌ Failed to enable flow logs via API.\nError details: {e}")
 
 
 def main() -> int:
@@ -3264,6 +3443,7 @@ def main() -> int:
                                     )
                                     if enable_choice == "y":
                                         auto_enable_flow_logs(
+                                            creds,  # 🟢 ADD THIS LINE
                                             selected_res.name,
                                             selected_res.location,
                                             project_id,
@@ -3318,6 +3498,7 @@ def main() -> int:
 
                                 if enable_choice == "y":
                                     auto_enable_flow_logs(
+                                        creds,  # 🟢 ADD THIS LINE
                                         selected_res.name,
                                         selected_res.location,
                                         project_id,
@@ -3487,12 +3668,35 @@ def main() -> int:
                                 print(
                                     "Firewall Insights metrics are generated only for rules with logging enabled."
                                 )
-                                print(
-                                    "\n💡 TIP: Enable Firewall Rules Logging, wait a few minutes, then check again."
+
+                                # 🟢 NEW: Offer the Auto-Fix!
+                                enable_choice = (
+                                    input(
+                                        f"\nDo you want to automatically enable Firewall Logging for {selected_res.name} now? (y/n): "
+                                    )
+                                    .strip()
+                                    .lower()
                                 )
-                                print("=" * 60)
-                                input("\nPress Enter to return to tabs...")
-                                continue
+
+                                if enable_choice == "y":
+                                    # 🟢 We now check if it succeeded!
+                                    success = auto_enable_firewall_logging(
+                                        creds, project_id, selected_res.name
+                                    )
+                                    if success:
+                                        # Temporarily update the local state
+                                        if "logConfig" not in selected_res.raw:
+                                            selected_res.raw["logConfig"] = {}
+                                        selected_res.raw["logConfig"]["enable"] = True
+                                    else:
+                                        # If it failed, don't try to fetch metrics. Go back.
+                                        print("=" * 60)
+                                        input("\nPress Enter to return to tabs...")
+                                        continue
+                                else:
+                                    print("=" * 60)
+                                    input("\nPress Enter to return to tabs...")
+                                    continue
 
                             print("Select time range:")
                             print("1: Last 1 hour")
@@ -3573,6 +3777,184 @@ def main() -> int:
                             print(f"⚙️ CONFIGURATION: {selected_res.name}")
                             print("=" * 60)
                             print(json.dumps(selected_res.raw, indent=2))
+                            print("=" * 60)
+                            input("\nPress Enter to return to tabs...")
+                            continue
+                        # 🟢 NEW: DEPENDENCIES TAB FOR ROUTES
+                        # DEPENDENCIES TAB FOR ROUTES
+                        elif selected_tab == "Dependencies" and cat_key == "route":
+                            print("\n" + "=" * 60)
+                            print(f"🔗 DEPENDENCIES: {selected_res.name}")
+                            print("=" * 60)
+
+                            network_name = (
+                                selected_res.raw.get("network") or "N/A"
+                            ).split("/")[-1]
+                            print(f"Parent VPC Network:  {network_name}")
+
+                            next_hop = selected_res.raw.get("next_hop") or "N/A"
+                            print(
+                                f"Next Hop Target:     {str(next_hop).split('/')[-1]}"
+                            )
+
+                            nh = str(next_hop).lower()
+                            if "peering" in nh or "servicenetworking" in nh:
+                                print(
+                                    "Connection Type:     VPC Peering / Private Service Connect"
+                                )
+                            elif "instance" in nh:
+                                print("Connection Type:     VM Instance target")
+                            elif "gateway" in nh or "internet" in nh:
+                                print("Connection Type:     Internet/Default Gateway")
+                            else:
+                                print("Connection Type:     Internal/Other")
+
+                            print("=" * 60)
+                            input("\nPress Enter to return to tabs...")
+                            continue
+
+                            # HEALTH CHECKS TAB FOR ROUTES
+                        elif selected_tab == "Health Checks" and cat_key == "route":
+                            print("\n" + "=" * 60)
+                            print(f"🩺 ROUTE HEALTH CHECKS: {selected_res.name}")
+                            print("=" * 60)
+
+                            dest_range = selected_res.raw.get(
+                                "dest_range", ""
+                            ) or selected_res.raw.get("destRange", "")
+                            priority = selected_res.raw.get("priority", 1000)
+                            network = selected_res.raw.get("network")
+
+                            all_routes = NetworkOrchestrator.list_resources(
+                                "route", creds, project_id
+                            )
+                            all_network_routes = [
+                                r for r in all_routes if r.raw.get("network") == network
+                            ]
+
+                            exact_duplicates = [
+                                r.name
+                                for r in all_network_routes
+                                if (
+                                    r.raw.get("dest_range") == dest_range
+                                    or r.raw.get("destRange") == dest_range
+                                )
+                                and r.name != selected_res.name
+                            ]
+
+                            if exact_duplicates:
+                                print("⚠ WARNING: Overlapping routes detected!")
+                                print(
+                                    f"  This route shares the exact same CIDR ({dest_range}) with: {', '.join(exact_duplicates)}"
+                                )
+                                print(
+                                    "  GCP will route traffic based on Priority (lower number wins)."
+                                )
+                            else:
+                                print(
+                                    "✅ PASS: No exact duplicate destination ranges found."
+                                )
+
+                            next_hop = selected_res.raw.get("next_hop") or "N/A"
+                            if next_hop == "N/A":
+                                print(
+                                    "❌ FAIL: Invalid Next Hop. This route does not have a valid forwarding target."
+                                )
+                            else:
+                                print(
+                                    f"✅ PASS: Next hop target is defined: {str(next_hop).split('/')[-1]}"
+                                )
+
+                            if priority == 1000:
+                                print("✅ PASS: Using standard priority (1000).")
+                            elif priority < 1000:
+                                print(
+                                    f"💡 NOTE: High priority route ({priority}). This will override standard routes."
+                                )
+                            else:
+                                print(
+                                    f"💡 NOTE: Low priority route ({priority}). This acts as a fallback."
+                                )
+
+                            print("=" * 60)
+                            input("\nPress Enter to return to tabs...")
+                            continue
+
+                        # 🟢 NEW: HEALTH CHECKS TAB FOR ROUTES
+                        elif selected_tab == "Health Checks" and cat_key == "route":
+                            print("\n" + "=" * 60)
+                            print(f"🩺 ROUTE HEALTH CHECKS: {selected_res.name}")
+                            print("=" * 60)
+
+                            # Grab current route details
+                            dest_range = selected_res.raw.get(
+                                "dest_range", ""
+                            ) or selected_res.raw.get("destRange", "")
+                            priority = selected_res.raw.get("priority", 1000)
+                            network = selected_res.raw.get("network")
+
+                            # Find all other routes in the same VPC to check for overlaps
+                            all_routes = NetworkOrchestrator.list_resources(
+                                "route", creds, project_id
+                            )
+                            all_network_routes = [
+                                r for r in all_routes if r.raw.get("network") == network
+                            ]
+
+                            # CHECK 1: Exact Duplicates / Overlaps
+                            exact_duplicates = [
+                                r.name
+                                for r in all_network_routes
+                                if (
+                                    r.raw.get("dest_range") == dest_range
+                                    or r.raw.get("destRange") == dest_range
+                                )
+                                and r.name != selected_res.name
+                            ]
+
+                            if exact_duplicates:
+                                print(f"⚠ WARNING: Overlapping routes detected!")
+                                print(
+                                    f"  This route shares the exact same CIDR ({dest_range}) with: {', '.join(exact_duplicates)}"
+                                )
+                                print(
+                                    f"  GCP will route traffic based on Priority (lower number wins)."
+                                )
+                            else:
+                                print(
+                                    f"✅ PASS: No exact duplicate destination ranges found."
+                                )
+
+                            # CHECK 2: Valid Next Hop
+                            next_hop = (
+                                selected_res.raw.get("next_hop_gateway")
+                                or selected_res.raw.get("next_hop_ip")
+                                or selected_res.raw.get("next_hop_instance")
+                                or selected_res.raw.get("next_hop_peering")
+                                or selected_res.raw.get("next_hop_network")
+                                or selected_res.raw.get("next_hop_vpn_tunnel")
+                            )
+                            if not next_hop:
+                                print(
+                                    f"❌ FAIL: Invalid Next Hop. This route does not have a valid forwarding target."
+                                )
+                            else:
+                                print(
+                                    f"✅ PASS: Next hop target is defined: {next_hop.split('/')[-1]}"
+                                )
+
+                            # CHECK 3: Priority Check
+                            if priority == 1000:
+                                print(f"✅ PASS: Using standard priority (1000).")
+                            elif priority < 1000:
+                                print(
+                                    f"💡 NOTE: High priority route ({priority}). This will override standard routes."
+                                )
+                            else:
+                                print(
+                                    f"💡 NOTE: Low priority route ({priority}). This acts as a fallback."
+                                )
+
                             print("=" * 60)
                             input("\nPress Enter to return to tabs...")
                             continue
@@ -3748,12 +4130,22 @@ def main() -> int:
                                     print(json.dumps(alerts, indent=2))
 
                             elif alert_choice == "2":
-                                print(
-                                    f"\n⚙️ Configure Network Alert for {selected_res.name}"
-                                )
-                                custom_data = configure_custom_network_metric(
-                                    creds, project_id, selected_res.name
-                                )
+                                # 🟢 FIX: Route to the correct configuration menu based on the resource type!
+                                if cat_key == "firewall":
+                                    custom_data = configure_custom_firewall_metric(
+                                        creds, project_id, selected_res.name
+                                    )
+                                elif cat_key == "subnet":
+                                    custom_data = configure_custom_subnet_metric(
+                                        creds, project_id, selected_res.name
+                                    )
+                                else:
+                                    print(
+                                        f"\n⚙️ Configure Network Alert for {selected_res.name}"
+                                    )
+                                    custom_data = configure_custom_network_metric(
+                                        creds, project_id, selected_res.name
+                                    )
 
                                 if custom_data:
                                     print("\n🚨 SUMMARY: ALERT TO BE CREATED IN GCP")
@@ -4003,4 +4395,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
