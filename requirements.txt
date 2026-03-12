@@ -13,8 +13,12 @@ google-api-core==2.25.2
 google-api-python-client==2.190.0
 google-auth==2.49.0.dev0
 google-auth-httplib2==0.3.0
+google-cloud-appengine-logging==1.8.0
+google-cloud-audit-log==0.4.0
 google-cloud-compute==1.44.0
 google-cloud-container==2.63.0
+google-cloud-core==2.5.0
+google-cloud-logging==3.14.0
 google-cloud-monitoring==2.29.1
 google-cloud-resource-manager==1.16.0
 google-generativeai==0.8.6
@@ -24,6 +28,7 @@ grpcio==1.78.0
 grpcio-status==1.71.2
 httplib2==0.31.2
 idna==3.11
+<<<<<<< HEAD
 jmespath==1.1.0
 numpy==2.4.2
 openpyxl==3.1.5
@@ -32,6 +37,10 @@ pandas==3.0.0
 pdfminer.six==20251230
 pdfplumber==0.11.9
 pillow==12.1.1
+=======
+importlib_metadata==8.7.1
+opentelemetry-api==1.40.0
+>>>>>>> 8746228 (feat: add GKE and database monitoring metrics)
 proto-plus==1.27.1
 protobuf==5.29.6
 pyasn1==0.6.2
@@ -53,4 +62,8 @@ typing_extensions==4.15.0
 tzdata==2025.3
 uritemplate==4.2.0
 urllib3==2.6.3
+<<<<<<< HEAD
 xlsxwriter==3.2.9
+=======
+zipp==3.23.0
+>>>>>>> 8746228 (feat: add GKE and database monitoring metrics)

@@ -115,6 +115,186 @@ class InventoryResult:
     errors: List[str]
 
 
+GKE_MONITORING_CATALOG = {
+    # ---------------------------------------------------------
+    # 1. CLUSTER METRICS
+    # ---------------------------------------------------------
+    "cluster": {
+        "label": "Cluster Metrics",
+        "metrics": {
+            "cluster_cpu_utilization": {
+                "label": "Cluster CPU Utilization",
+                "description": "Average CPU allocatable utilization across the cluster.",
+                "unit": "%",
+                "threshold_type": "percentage",
+                "default_warning": 70,
+                "default_critical": 85,
+                "duration_options": [60, 300, 600],
+                "gcp_metric": 'metric.type="kubernetes.io/node/cpu/allocatable_utilization"',
+                "resource_type": 'resource.type="k8s_node"',
+                "aligner": "ALIGN_MEAN",
+                "transform": "fraction_to_percent",
+            },
+            "cluster_memory_utilization": {
+                "label": "Cluster Memory Utilization",
+                "description": "Average memory allocatable utilization across the cluster.",
+                "unit": "%",
+                "threshold_type": "percentage",
+                "default_warning": 75,
+                "default_critical": 90,
+                "duration_options": [60, 300, 600],
+                "gcp_metric": 'metric.type="kubernetes.io/node/memory/allocatable_utilization"',
+                "resource_type": 'resource.type="k8s_node"',
+                "aligner": "ALIGN_MEAN",
+                "transform": "fraction_to_percent",
+            },
+        },
+    },
+    # ---------------------------------------------------------
+    # 2. NODE METRICS
+    # ---------------------------------------------------------
+    "node": {
+        "label": "Node Metrics",
+        "metrics": {
+            "node_cpu_usage": {
+                "label": "Node CPU Usage",
+                "description": "CPU core usage time of Kubernetes nodes.",
+                "unit": "cores",
+                "threshold_type": "number",
+                "default_warning": 4,
+                "default_critical": 8,
+                "duration_options": [60, 300, 600],
+                "gcp_metric": 'metric.type="kubernetes.io/node/cpu/core_usage_time"',
+                "resource_type": 'resource.type="k8s_node"',
+                "aligner": "ALIGN_RATE",
+                "transform": "identity",
+            },
+            "node_memory_used": {
+                "label": "Node Memory Usage",
+                "description": "Memory used by Kubernetes nodes.",
+                "unit": "bytes",
+                "threshold_type": "number",
+                "default_warning": 8000000000,  # ~8GB
+                "default_critical": 12000000000,  # ~12GB
+                "duration_options": [60, 300, 600],
+                "gcp_metric": 'metric.type="kubernetes.io/node/memory/used_bytes"',
+                "resource_type": 'resource.type="k8s_node"',
+                "aligner": "ALIGN_MEAN",
+                "transform": "identity",
+            },
+            "node_ephemeral_storage": {
+                "label": "Node Ephemeral Storage Used",
+                "description": "Ephemeral storage used by Kubernetes nodes.",
+                "unit": "bytes",
+                "threshold_type": "number",
+                "default_warning": 50000000000,  # ~50GB
+                "default_critical": 100000000000,  # ~100GB
+                "duration_options": [300, 600],
+                "gcp_metric": 'metric.type="kubernetes.io/node/ephemeral_storage/used_bytes"',
+                "resource_type": 'resource.type="k8s_node"',
+                "aligner": "ALIGN_MEAN",
+                "transform": "identity",
+            },
+            "node_status_condition": {
+                "label": "Node Not Ready",
+                "description": "Nodes reporting a NotReady or Unknown condition.",
+                "unit": "count",
+                "threshold_type": "number",
+                "default_warning": 1,
+                "default_critical": 2,
+                "duration_options": [60, 300],
+                # 🟢 Notice the strict MQL filter appended here to catch only failed ready checks
+                "gcp_metric": 'metric.type="kubernetes.io/node/status_condition" AND metric.labels.condition_name="Ready" AND metric.labels.status!="true"',
+                "resource_type": 'resource.type="k8s_node"',
+                "aligner": "ALIGN_MEAN",
+                "transform": "identity",
+            },
+        },
+    },
+    # ---------------------------------------------------------
+    # 3. CONTAINER METRICS
+    # ---------------------------------------------------------
+    "container": {
+        "label": "Container Metrics",
+        "metrics": {
+            "container_cpu_limit_utilization": {
+                "label": "Container CPU Limit Utilization",
+                "description": "Fraction of container CPU limit currently in use.",
+                "unit": "%",
+                "threshold_type": "percentage",
+                "default_warning": 80,
+                "default_critical": 95,
+                "duration_options": [60, 300],
+                "gcp_metric": 'metric.type="kubernetes.io/container/cpu/limit_utilization"',
+                "resource_type": 'resource.type="k8s_container"',
+                "aligner": "ALIGN_MEAN",
+                "transform": "fraction_to_percent",
+            },
+            "container_memory_limit_utilization": {
+                "label": "Container Memory Limit Utilization",
+                "description": "Fraction of container memory limit currently in use.",
+                "unit": "%",
+                "threshold_type": "percentage",
+                "default_warning": 80,
+                "default_critical": 95,
+                "duration_options": [60, 300],
+                "gcp_metric": 'metric.type="kubernetes.io/container/memory/limit_utilization"',
+                "resource_type": 'resource.type="k8s_container"',
+                "aligner": "ALIGN_MEAN",
+                "transform": "fraction_to_percent",
+            },
+            "container_restart_count": {
+                "label": "Container Restart Count",
+                "description": "Number of container restarts.",
+                "unit": "count",
+                "threshold_type": "number",
+                "default_warning": 3,
+                "default_critical": 5,
+                "duration_options": [300, 600],
+                "gcp_metric": 'metric.type="kubernetes.io/container/restart_count"',
+                "resource_type": 'resource.type="k8s_container"',
+                "aligner": "ALIGN_DELTA",  # Captures new events within the window
+                "transform": "identity",
+            },
+        },
+    },
+    # ---------------------------------------------------------
+    # 4. POD NETWORK METRICS
+    # ---------------------------------------------------------
+    "pod_network": {
+        "label": "Pod Network Metrics",
+        "metrics": {
+            "pod_network_in": {
+                "label": "Pod Network Incoming",
+                "description": "Bytes received by pods.",
+                "unit": "bytes/s",
+                "threshold_type": "number",
+                "default_warning": 10000000,  # 10 MB/s
+                "default_critical": 50000000,  # 50 MB/s
+                "duration_options": [60, 300],
+                "gcp_metric": 'metric.type="kubernetes.io/pod/network/received_bytes_count"',
+                "resource_type": 'resource.type="k8s_pod"',
+                "aligner": "ALIGN_RATE",
+                "transform": "identity",
+            },
+            "pod_network_out": {
+                "label": "Pod Network Outgoing",
+                "description": "Bytes sent by pods.",
+                "unit": "bytes/s",
+                "threshold_type": "number",
+                "default_warning": 10000000,  # 10 MB/s
+                "default_critical": 50000000,  # 50 MB/s
+                "duration_options": [60, 300],
+                "gcp_metric": 'metric.type="kubernetes.io/pod/network/sent_bytes_count"',
+                "resource_type": 'resource.type="k8s_pod"',
+                "aligner": "ALIGN_RATE",
+                "transform": "identity",
+            },
+        },
+    },
+}
+
+
 VM_MONITORING_CATALOG = {
     "CPU": {
         "label": "CPU Metrics",
@@ -1126,21 +1306,49 @@ class ObservabilityCatalog:
                 "Network",
                 "Processes",
                 "Logs",
-                "Events",
                 "Alerts",
             ]
+
         elif resource.service == "gke":
-            return ["Nodes", "Workloads", "CPU", "Memory", "Logs", "System Events"]
+            # 🟢 Updated to match our verified GKE System Metrics groups
+            return [
+                "Overview",
+                "Cluster Metrics",
+                "Node Metrics",
+                "Workload Metrics",
+                "Alerts",
+            ]
+
         elif resource.service == "database":
-            return ["CPU", "Memory", "Connections", "Storage", "Logs"]
+            return [
+                "Overview",
+                "Performance Metrics",
+                "Storage Metrics",
+                "Connections",
+                "Replication",
+                "Logs",
+                "Alerts",
+            ]
+
         elif resource.service == "networking":
-            if resource.resource_type == "cloud_router":
-                return ["BGP Sessions", "Logs"]
+            if resource.resource_type == "firewall":
+                return [
+                    "Overview",
+                    "Configuration",
+                    "Traffic Metrics",
+                    "Security Insights",
+                    "Alerts",
+                ]
+            elif resource.resource_type == "subnet":
+                return ["Overview", "Configuration", "Metrics", "Alerts"]
+            elif resource.resource_type == "cloud_router":
+                return ["Overview", "BGP Sessions", "Metrics", "Logs", "Alerts"]
             elif resource.resource_type == "cloud_nat":
-                return ["Port Usage", "Dropped Packets", "Logs"]
+                return ["Overview", "Port Usage", "Metrics", "Logs", "Alerts"]
             else:
-                return ["Traffic Details", "Logs"]
-        return ["CPU"]
+                return ["Overview", "Configuration", "Alerts"]
+
+        return ["Overview"]
 
 
 class NetworkAlertPolicyOrchestrator:
@@ -1556,6 +1764,64 @@ class VmMetricsOrchestrator:
         return payload
 
 
+class MetricsOrchestrator:
+    @staticmethod
+    def get_metric_data(creds, project_id, metric_filter, aligner, lookback_hours=1):
+        from google.cloud import monitoring_v3
+        import datetime  # 🟢 Use standard datetime for cleaner logic
+
+        client = monitoring_v3.MetricServiceClient(credentials=creds)
+        project_name = f"projects/{project_id}"
+
+        # 🟢 Correct way to handle Timestamps in the modern SDK:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        start_time = now - datetime.timedelta(hours=lookback_hours)
+
+        # The SDK accepts Python datetime objects directly! No need for .Timestamp
+        interval = monitoring_v3.TimeInterval(
+            {"end_time": now, "start_time": start_time}
+        )
+
+        # 🟢 Correct way to handle Duration (use a dict or the helper):
+        # 🟢 FIX: Safe Aggregation for GKE Metrics
+        aggregation = monitoring_v3.Aggregation(
+            {
+                "alignment_period": {"seconds": 60},
+                "per_series_aligner": aligner,
+                # We use REDUCE_MEAN to get the average CPU/Memory across all nodes in the cluster
+                "cross_series_reducer": monitoring_v3.Aggregation.Reducer.REDUCE_MEAN,
+                # Note the "labels" pluralization here, which GCP expects
+                "group_by_fields": ["resource.labels.cluster_name"],
+            }
+        )
+
+        try:
+            results = client.list_time_series(
+                name=project_name,
+                filter=metric_filter,
+                interval=interval,
+                view=monitoring_v3.ListTimeSeriesRequest.TimeSeriesView.FULL,
+                aggregation=aggregation,
+            )
+
+            data_points = []
+            for series in results:
+                if series.points:
+                    # Get the most recent point (GCP returns newest first)
+                    point = series.points[0]
+                    # Check for different value types
+                    val = (
+                        point.value.double_value
+                        if point.value.double_value != 0
+                        else point.value.int64_value
+                    )
+                    data_points.append({"value": val})
+
+            return {"status": "success", "data": data_points}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+
 class VmLogsOrchestrator:
     """
     Fetches recent log entries from Google Cloud Logging for a specific resource.
@@ -1701,6 +1967,38 @@ class InventoryOrchestrator:
     Later, when you add monitoring metrics, you'll create a parallel:
       ObservabilityOrchestrator(resource -> categories -> metric queries)
     """
+
+    @staticmethod
+    def list_database_instances(creds, project_id):
+        """Discover Google Cloud SQL instances."""
+        from googleapiclient import discovery
+
+        try:
+            # We use v1beta4 for Cloud SQL Admin
+            service = discovery.build(
+                "sqladmin", "v1beta4", credentials=creds, cache_discovery=False
+            )
+            request = service.instances().list(project=project_id)
+            response = request.execute()
+
+            instances = []
+            for item in response.get("items", []):
+                # Map to our standard Lens NormalizedResource
+                res = NormalizedResource(
+                    id=item.get("name"),
+                    name=item.get("name"),
+                    service="database",
+                    resource_type="cloudsql_database",
+                    location=item.get("region", "UNKNOWN"),
+                    status=item.get("state", "UNKNOWN"),
+                    raw=item,
+                )
+                instances.append(res)
+
+            return instances
+        except Exception as e:
+            print(f"Failed to discover Cloud SQL instances: {e}")
+            return []
 
     @staticmethod
     def fetch_project_inventory(
@@ -4238,8 +4536,229 @@ def main() -> int:
                     if not selected_tab:
                         print("Invalid tab choice.")
                         continue
+                    # ==========================================
+                    # ☸️ GKE (KUBERNETES) ROUTING LOGIC
+                    # ==========================================
+                    if selected_service == "gke":
+                        if selected_tab == "Overview":
+                            print("\n" + "=" * 60)
+                            print(f"☸️  GKE CLUSTER OVERVIEW: {selected_res.name}")
+                            print("=" * 60)
+                            print(f"Location:        {selected_res.location}")
 
-                    # --- ROUTING LOGIC ---
+                            # 🟢 FIX: Force conversion to integer so the string "2" becomes RUNNING
+                            status_raw = getattr(selected_res, "status", 0)
+                            try:
+                                status_code = int(status_raw)
+                            except (ValueError, TypeError):
+                                status_code = 0
+
+                            status_map = {
+                                1: "PROVISIONING",
+                                2: "RUNNING",
+                                3: "RECONCILING",
+                                4: "STOPPING",
+                                5: "ERROR",
+                                6: "DEGRADED",
+                            }
+                            status_text = status_map.get(
+                                status_code, f"UNKNOWN ({status_raw})"
+                            )
+
+                            # Handle both snake_case and camelCase API returns
+                            node_count = selected_res.raw.get(
+                                "current_node_count"
+                            ) or selected_res.raw.get("currentNodeCount", "N/A")
+                            master_ver = selected_res.raw.get(
+                                "current_master_version"
+                            ) or selected_res.raw.get("currentMasterVersion", "N/A")
+
+                            print(f"Status:          {status_text}")
+                            print(f"Node Count:      {node_count}")
+                            print(f"Master Version:  {master_ver}")
+                            print("=" * 60)
+                            input("\nPress Enter to return to tabs...")
+                            continue
+
+                        elif selected_tab == "Cluster Metrics":
+                            print("\n" + "=" * 60)
+                            print(f"📊 CLUSTER METRICS: {selected_res.name}")
+                            print("=" * 60)
+
+                            metrics_to_fetch = GKE_MONITORING_CATALOG["cluster"][
+                                "metrics"
+                            ]
+
+                            print("Select time range:")
+                            print("1: Last 1 hour | 2: Last 24 hours")
+                            range_choice = input(
+                                "\nEnter choice [default: 1h]: "
+                            ).strip()
+                            lookback_hours = 24 if range_choice == "2" else 1
+
+                            print(
+                                f"\nFetching Cluster Metrics for {selected_res.name}..."
+                            )
+
+                            for metric_key, metric_info in metrics_to_fetch.items():
+                                gke_filter = f'{metric_info["gcp_metric"]} AND {metric_info["resource_type"]} AND resource.labels.cluster_name="{selected_res.name}"'
+
+                                result = MetricsOrchestrator.get_metric_data(
+                                    creds=creds,
+                                    project_id=project_id,
+                                    metric_filter=gke_filter,
+                                    aligner=metric_info["aligner"],
+                                    lookback_hours=lookback_hours,
+                                )
+
+                                if (
+                                    result
+                                    and result.get("status") == "success"
+                                    and result.get("data")
+                                ):
+                                    val = result["data"][0]["value"]
+                                    if (
+                                        metric_info.get("transform")
+                                        == "fraction_to_percent"
+                                    ):
+                                        val = val * 100
+                                    print(
+                                        f"✅ {metric_info['label']}: {val:.2f} {metric_info['unit']}"
+                                    )
+                                else:
+                                    print(f"⚠️ {metric_info['label']}: No data found")
+
+                            print("=" * 60)
+                            input("\nPress Enter to return to tabs...")
+                            continue
+
+                        elif selected_tab == "Node Metrics":
+                            print("\n" + "=" * 60)
+                            print(f"🖥️ AVERAGE NODE METRICS: {selected_res.name}")
+                            print("=" * 60)
+
+                            metrics_to_fetch = GKE_MONITORING_CATALOG["node"]["metrics"]
+
+                            print("Select time range:")
+                            print("1: Last 1 hour | 2: Last 24 hours")
+                            range_choice = input(
+                                "\nEnter choice [default: 1h]: "
+                            ).strip()
+                            lookback_hours = 24 if range_choice == "2" else 1
+
+                            print(
+                                f"\nFetching Average Node Metrics for {selected_res.name}..."
+                            )
+
+                            for metric_key, metric_info in metrics_to_fetch.items():
+                                gke_filter = f'{metric_info["gcp_metric"]} AND {metric_info["resource_type"]} AND resource.labels.cluster_name="{selected_res.name}"'
+
+                                result = MetricsOrchestrator.get_metric_data(
+                                    creds=creds,
+                                    project_id=project_id,
+                                    metric_filter=gke_filter,
+                                    aligner=metric_info["aligner"],
+                                    lookback_hours=lookback_hours,
+                                )
+
+                                if (
+                                    result
+                                    and result.get("status") == "success"
+                                    and result.get("data")
+                                ):
+                                    val = result["data"][0]["value"]
+                                    if (
+                                        metric_info.get("transform")
+                                        == "fraction_to_percent"
+                                    ):
+                                        val = val * 100
+                                    print(
+                                        f"✅ {metric_info['label']}: {val:.2f} {metric_info['unit']}"
+                                    )
+                                else:
+                                    print(f"⚠️ {metric_info['label']}: No data found")
+
+                            print("=" * 60)
+                            input("\nPress Enter to return to tabs...")
+                            continue
+
+                        elif selected_tab == "Workload Metrics":
+                            print("\n" + "=" * 60)
+                            print(
+                                f"📦 AGGREGATED WORKLOAD METRICS: {selected_res.name}"
+                            )
+                            print("=" * 60)
+
+                            # Combine container and pod network metrics
+                            metrics_to_fetch = {
+                                **GKE_MONITORING_CATALOG["container"]["metrics"],
+                                **GKE_MONITORING_CATALOG["pod_network"]["metrics"],
+                            }
+
+                            print("Select time range:")
+                            print("1: Last 1 hour | 2: Last 24 hours")
+                            range_choice = input(
+                                "\nEnter choice [default: 1h]: "
+                            ).strip()
+                            lookback_hours = 24 if range_choice == "2" else 1
+
+                            print(
+                                f"\nFetching Workload Metrics for {selected_res.name}..."
+                            )
+
+                            for metric_key, metric_info in metrics_to_fetch.items():
+                                gke_filter = f'{metric_info["gcp_metric"]} AND {metric_info["resource_type"]} AND resource.labels.cluster_name="{selected_res.name}"'
+
+                                result = MetricsOrchestrator.get_metric_data(
+                                    creds=creds,
+                                    project_id=project_id,
+                                    metric_filter=gke_filter,
+                                    aligner=metric_info["aligner"],
+                                    lookback_hours=lookback_hours,
+                                )
+
+                                if (
+                                    result
+                                    and result.get("status") == "success"
+                                    and result.get("data")
+                                ):
+                                    val = result["data"][0]["value"]
+                                    if (
+                                        metric_info.get("transform")
+                                        == "fraction_to_percent"
+                                    ):
+                                        val = val * 100
+                                    print(
+                                        f"✅ {metric_info['label']}: {val:.2f} {metric_info['unit']}"
+                                    )
+                                else:
+                                    print(f"⚠️ {metric_info['label']}: No data found")
+
+                            print("=" * 60)
+                            input("\nPress Enter to return to tabs...")
+                            continue
+
+                        elif selected_tab == "Alerts":
+                            print("\n" + "=" * 60)
+                            print(f"🚨 ALERTS FOR GKE CLUSTER: {selected_res.name}")
+                            print("=" * 60)
+                            print("1: View Existing Alerts")
+                            print("2: Create New Alert Policy")
+
+                            alert_choice = input(
+                                "\nEnter choice (or press Enter to go back): "
+                            ).strip()
+                            if alert_choice:
+                                print("\n🚧 GKE Alert configuration coming soon!")
+
+                            print("=" * 60)
+                            input("\nPress Enter to return to tabs...")
+                            continue
+
+                    # =======================================================
+                    # --- ROUTING LOGIC (This is your existing VM logic) ---
+                    # =======================================================
+
                     if selected_tab == "Logs":
                         print(f"\n📜 Fetching logs for: {selected_res.name}...")
                         formatted_logs = VmLogsOrchestrator.get_recent_logs(
