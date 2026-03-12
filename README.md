@@ -190,7 +190,7 @@ Run the script:
 ```bash
 python metrics.py
        or
-python metrices.py --sa-file ccd-poc-project-3847234sdhdf.json     ##this is .json service key fie##
+python metrics.py --sa-file ccd-poc-project-3847234sdhdf.json     ##this is .json service key fie##
 ```
 
 Provide the **service account JSON key** when prompted.
