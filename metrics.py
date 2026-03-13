@@ -13,6 +13,10 @@ import sys
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional, Tuple
 
+import json
+from datetime import datetime, timezone, timedelta
+
+
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -113,6 +117,271 @@ class InventoryResult:
     project_id: str
     services: Dict[str, List[NormalizedResource]]
     errors: List[str]
+
+
+DATABASE_MONITORING_CATALOG = {
+    "common": {
+        "cpu": {
+            "cpu_utilization": {
+                "label": "CPU Utilization",
+                "unit": "%",
+                "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/cpu/utilization"',
+                "resource_type": 'resource.type="cloudsql_database"',
+                "aligner": "ALIGN_MEAN",
+                "transform": "fraction_to_percent",
+            },
+            "cpu_reserved_cores": {
+                "label": "CPU Reserved Cores",
+                "unit": "cores",
+                "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/cpu/reserved_cores"',
+                "resource_type": 'resource.type="cloudsql_database"',
+                "aligner": "ALIGN_MEAN",
+                "transform": "identity",
+            },
+        },
+        "memory": {
+            "memory_utilization": {
+                "label": "Memory Utilization",
+                "unit": "%",
+                "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/memory/utilization"',
+                "resource_type": 'resource.type="cloudsql_database"',
+                "aligner": "ALIGN_MEAN",
+                "transform": "fraction_to_percent",
+            },
+            "memory_usage": {
+                "label": "Memory Used (Excluding Cache)",
+                "unit": "Bytes",
+                "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/memory/usage"',
+                "resource_type": 'resource.type="cloudsql_database"',
+                "aligner": "ALIGN_MEAN",
+                "transform": "identity",
+            },
+            "memory_total_usage": {
+                "label": "Memory Used (Including Cache)",
+                "unit": "Bytes",
+                "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/memory/total_usage"',
+                "resource_type": 'resource.type="cloudsql_database"',
+                "aligner": "ALIGN_MEAN",
+                "transform": "identity",
+            },
+        },
+        "storage": {
+            "disk_utilization": {
+                "label": "Disk Utilization",
+                "unit": "%",
+                "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/disk/utilization"',
+                "resource_type": 'resource.type="cloudsql_database"',
+                "aligner": "ALIGN_MEAN",
+                "transform": "fraction_to_percent",
+            },
+            "disk_bytes_used": {
+                "label": "Disk Bytes Used",
+                "unit": "Bytes",
+                "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/disk/bytes_used"',
+                "resource_type": 'resource.type="cloudsql_database"',
+                "aligner": "ALIGN_MEAN",
+                "transform": "identity",
+            },
+            "disk_read_ops": {
+                "label": "Disk Read Ops",
+                "unit": "ops/s",
+                "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/disk/read_ops_count"',
+                "resource_type": 'resource.type="cloudsql_database"',
+                "aligner": "ALIGN_RATE",
+                "transform": "identity",
+            },
+            "disk_write_ops": {
+                "label": "Disk Write Ops",
+                "unit": "ops/s",
+                "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/disk/write_ops_count"',
+                "resource_type": 'resource.type="cloudsql_database"',
+                "aligner": "ALIGN_RATE",
+                "transform": "identity",
+            },
+            "disk_read_bytes": {
+                "label": "Disk Read Throughput",
+                "unit": "B/s",
+                "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/disk/read_bytes_count"',
+                "resource_type": 'resource.type="cloudsql_database"',
+                "aligner": "ALIGN_RATE",
+                "transform": "identity",
+            },
+            "disk_write_bytes": {
+                "label": "Disk Write Throughput",
+                "unit": "B/s",
+                "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/disk/write_bytes_count"',
+                "resource_type": 'resource.type="cloudsql_database"',
+                "aligner": "ALIGN_RATE",
+                "transform": "identity",
+            },
+        },
+        "network": {
+            "network_received": {
+                "label": "Network Received",
+                "unit": "B/s",
+                "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/network/received_bytes_count"',
+                "resource_type": 'resource.type="cloudsql_database"',
+                "aligner": "ALIGN_RATE",
+                "transform": "identity",
+            },
+            "network_sent": {
+                "label": "Network Sent",
+                "unit": "B/s",
+                "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/network/sent_bytes_count"',
+                "resource_type": 'resource.type="cloudsql_database"',
+                "aligner": "ALIGN_RATE",
+                "transform": "identity",
+            },
+        },
+        "health": {
+            "instance_up": {
+                "label": "Instance Up",
+                "unit": "(1=Up, 0=Down)",
+                "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/up"',
+                "resource_type": 'resource.type="cloudsql_database"',
+                "aligner": "ALIGN_MEAN",
+                "transform": "identity",
+            },
+        },
+    },
+    "engine_specific": {
+        "MYSQL": {
+            "connections": {
+                "mysql_connections": {
+                    "label": "Active Connections",
+                    "unit": "connections",
+                    "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/network/connections"',
+                    "resource_type": 'resource.type="cloudsql_database"',
+                    "aligner": "ALIGN_MEAN",
+                    "transform": "identity",
+                },
+            },
+            "insights": {
+                "mysql_slow_queries": {
+                    "label": "Slow Queries",
+                    "unit": "queries/s",
+                    "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/mysql/slow_queries_count"',
+                    "resource_type": 'resource.type="cloudsql_database"',
+                    "aligner": "ALIGN_RATE",
+                    "transform": "identity",
+                },
+                "mysql_aborted_clients": {
+                    "label": "Aborted Clients",
+                    "unit": "clients/s",
+                    "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/mysql/aborted_clients_count"',
+                    "resource_type": 'resource.type="cloudsql_database"',
+                    "aligner": "ALIGN_RATE",
+                    "transform": "identity",
+                },
+            },
+            "replication": {
+                "mysql_repl_lag": {
+                    "label": "Seconds Behind Master",
+                    "unit": "seconds",
+                    "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/mysql/replication/seconds_behind_master"',
+                    "resource_type": 'resource.type="cloudsql_database"',
+                    "aligner": "ALIGN_MEAN",
+                    "transform": "identity",
+                },
+            },
+        },
+        "POSTGRES": {
+            "connections": {
+                "pg_num_backends": {
+                    "label": "Active Backends (Connections)",
+                    "unit": "connections",
+                    "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/postgresql/num_backends"',
+                    "resource_type": 'resource.type="cloudsql_database"',
+                    "aligner": "ALIGN_MEAN",
+                    "transform": "identity",
+                },
+                "pg_new_connections": {
+                    "label": "New Connection Rate",
+                    "unit": "conn/s",
+                    "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/postgresql/new_connection_count"',
+                    "resource_type": 'resource.type="cloudsql_database"',
+                    "aligner": "ALIGN_RATE",
+                    "transform": "identity",
+                },
+            },
+            "insights": {
+                "pg_transactions": {
+                    "label": "Transaction Rate",
+                    "unit": "tx/s",
+                    "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/postgresql/transaction_count"',
+                    "resource_type": 'resource.type="cloudsql_database"',
+                    "aligner": "ALIGN_RATE",
+                    "transform": "identity",
+                },
+                "pg_statements": {
+                    "label": "Statements Executed",
+                    "unit": "stmt/s",
+                    "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/postgresql/statements_executed_count"',
+                    "resource_type": 'resource.type="cloudsql_database"',
+                    "aligner": "ALIGN_RATE",
+                    "transform": "identity",
+                },
+                "pg_deadlocks": {
+                    "label": "Deadlock Count",
+                    "unit": "deadlocks/s",
+                    "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/postgresql/deadlock_count"',
+                    "resource_type": 'resource.type="cloudsql_database"',
+                    "aligner": "ALIGN_RATE",
+                    "transform": "identity",
+                },
+                "pg_tx_id_util": {
+                    "label": "Transaction ID Utilization (Wraparound)",
+                    "unit": "%",
+                    "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/postgresql/transaction_id_utilization"',
+                    "resource_type": 'resource.type="cloudsql_database"',
+                    "aligner": "ALIGN_MEAN",
+                    "transform": "fraction_to_percent",
+                },
+                "pg_oldest_tx": {
+                    "label": "Oldest Transaction Age",
+                    "unit": "seconds",
+                    "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/postgresql/vacuum/oldest_transaction_age"',
+                    "resource_type": 'resource.type="cloudsql_database"',
+                    "aligner": "ALIGN_MEAN",
+                    "transform": "identity",
+                },
+            },
+            "replication": {
+                "pg_repl_lag_bytes": {
+                    "label": "Replica Byte Lag",
+                    "unit": "Bytes",
+                    "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/postgresql/replication/replica_byte_lag"',
+                    "resource_type": 'resource.type="cloudsql_database"',
+                    "aligner": "ALIGN_MEAN",
+                    "transform": "identity",
+                },
+            },
+        },
+        "SQLSERVER": {
+            "connections": {
+                "sqlserver_connections": {
+                    "label": "User Connections",
+                    "unit": "connections",
+                    "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/sqlserver/connections/user_connections"',
+                    "resource_type": 'resource.type="cloudsql_database"',
+                    "aligner": "ALIGN_MEAN",
+                    "transform": "identity",
+                },
+            },
+            "insights": {
+                "sqlserver_batch_requests": {
+                    "label": "Batch Requests",
+                    "unit": "req/s",
+                    "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/sqlserver/transactions/batch_requests_count"',
+                    "resource_type": 'resource.type="cloudsql_database"',
+                    "aligner": "ALIGN_RATE",
+                    "transform": "identity",
+                },
+            },
+            "replication": {},
+        },
+    },
+}
 
 
 GKE_MONITORING_CATALOG = {
@@ -1764,60 +2033,329 @@ class VmMetricsOrchestrator:
         return payload
 
 
+class DatabaseLogsOrchestrator:
+    @staticmethod
+    def get_recent_logs(
+        creds,
+        project_id: str,
+        instance_name: str,
+        limit: int = 20,
+    ):
+        if logging_v2 is None:
+            raise RuntimeError(
+                "Missing google-cloud-logging. Install: pip install google-cloud-logging"
+            )
+
+        client = logging_v2.Client(project=project_id, credentials=creds)
+
+        # Cloud SQL logs usually carry the database_id label as project:instance
+        db_id = f"{project_id}:{instance_name}"
+
+        filter_str = f'''
+            resource.type="cloudsql_database"
+            AND resource.labels.database_id="{db_id}"
+            AND timestamp >= "{(datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")}"
+        '''
+
+        entries = client.list_entries(
+            filter_=filter_str,
+            order_by=logging_v2.DESCENDING,
+            page_size=limit,
+        )
+
+        logs = []
+        for entry in entries:
+            message = ""
+            payload = entry.payload
+
+            if isinstance(payload, dict):
+                message = json.dumps(payload, ensure_ascii=False)
+            else:
+                message = str(payload)
+
+            logs.append(
+                {
+                    "timestamp": entry.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                    if entry.timestamp
+                    else "N/A",
+                    "severity": str(entry.severity) if entry.severity else "DEFAULT",
+                    "message": message,
+                }
+            )
+
+        return logs
+
+
+def configure_custom_database_metric(creds, project_id: str, instance_name: str):
+    print("\nSelect a database metric:")
+    metric_options = {
+        "1": {
+            "label": "CPU Utilization",
+            "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/cpu/utilization"',
+            "resource_type": 'resource.type="cloudsql_database"',
+            "unit": "%",
+            "transform": "fraction_to_percent",
+            "aligner": monitoring_v3.Aggregation.Aligner.ALIGN_MEAN,
+            "alignment_period": 300,
+        },
+        "2": {
+            "label": "Memory Utilization",
+            "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/memory/utilization"',
+            "resource_type": 'resource.type="cloudsql_database"',
+            "unit": "%",
+            "transform": "fraction_to_percent",
+            "aligner": monitoring_v3.Aggregation.Aligner.ALIGN_MEAN,
+            "alignment_period": 300,
+        },
+        "3": {
+            "label": "Disk Utilization",
+            "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/disk/utilization"',
+            "resource_type": 'resource.type="cloudsql_database"',
+            "unit": "%",
+            "transform": "fraction_to_percent",
+            "aligner": monitoring_v3.Aggregation.Aligner.ALIGN_MEAN,
+            "alignment_period": 300,
+        },
+        "4": {
+            "label": "Active Connections",
+            "gcp_metric": 'metric.type="cloudsql.googleapis.com/database/network/connections"',
+            "resource_type": 'resource.type="cloudsql_database"',
+            "unit": "count",
+            "transform": "identity",
+            "aligner": monitoring_v3.Aggregation.Aligner.ALIGN_MEAN,
+            "alignment_period": 300,
+        },
+    }
+
+    for k, v in metric_options.items():
+        print(f"{k}: {v['label']}")
+
+    metric_choice = input("\nEnter metric choice: ").strip()
+    if metric_choice not in metric_options:
+        print("Invalid metric choice.")
+        return None
+
+    metric_cfg = metric_options[metric_choice]
+
+    operator = input("Enter operator (gt/lt/>/<): ").strip().lower()
+    if operator not in {"gt", "lt", ">", "<", "gte", "lte", ">=", "<="}:
+        print("Invalid operator.")
+        return None
+
+    threshold_value = input(f"Enter threshold value ({metric_cfg['unit']}): ").strip()
+    try:
+        threshold_value = float(threshold_value)
+    except ValueError:
+        print("Threshold must be numeric.")
+        return None
+
+    duration_seconds = input("Enter duration in seconds [default 300]: ").strip()
+    duration_seconds = int(duration_seconds) if duration_seconds else 300
+
+    alert_name = f"Lens DB Alert | {instance_name} | {metric_cfg['label']}"
+
+    return {
+        "alert_name": alert_name,
+        "label": metric_cfg["label"],
+        "gcp_metric": metric_cfg["gcp_metric"],
+        "resource_type": metric_cfg["resource_type"],
+        "unit": metric_cfg["unit"],
+        "transform": metric_cfg["transform"],
+        "aligner": metric_cfg["aligner"],
+        "alignment_period": metric_cfg["alignment_period"],
+        "operator": operator,
+        "threshold_value": threshold_value,
+        "duration_seconds": duration_seconds,
+    }
+
+
+class DatabaseAlertPolicyOrchestrator:
+    @staticmethod
+    def list_database_alerts(creds, project_id: str, instance_name: str):
+        if monitoring_v3 is None:
+            raise RuntimeError(
+                "Missing google-cloud-monitoring. Install: pip install google-cloud-monitoring"
+            )
+
+        client = monitoring_v3.AlertPolicyServiceClient(credentials=creds)
+        project_name = f"projects/{project_id}"
+
+        results = client.list_alert_policies(name=project_name)
+
+        matches = []
+        for policy in results:
+            policy_text = json.dumps(
+                monitoring_v3.AlertPolicy.to_dict(policy), default=str
+            )
+            if (
+                instance_name.lower() in policy.display_name.lower()
+                or instance_name.lower() in policy_text.lower()
+            ):
+                matches.append(
+                    {
+                        "name": policy.name,
+                        "display_name": policy.display_name,
+                        "enabled": policy.enabled,
+                    }
+                )
+
+        return matches
+
+    @staticmethod
+    def _comparison_enum(operator: str):
+        enum_cls = monitoring_v3.AlertPolicy.Condition.MetricThreshold.ComparisonType
+        op = operator.strip().lower()
+
+        mapping = {
+            "gt": enum_cls.COMPARISON_GT,
+            ">": enum_cls.COMPARISON_GT,
+            "lt": enum_cls.COMPARISON_LT,
+            "<": enum_cls.COMPARISON_LT,
+            "gte": enum_cls.COMPARISON_GT,
+            ">=": enum_cls.COMPARISON_GT,
+            "lte": enum_cls.COMPARISON_LT,
+            "<=": enum_cls.COMPARISON_LT,
+        }
+
+        if op not in mapping:
+            raise ValueError("Operator must be one of: gt, lt, gte, lte, >, <, >=, <=")
+
+        return mapping[op]
+
+    @staticmethod
+    def create_database_alert_policy(
+        credentials,
+        project_id: str,
+        instance_name: str,
+        custom_data: dict,
+    ):
+        if monitoring_v3 is None:
+            raise RuntimeError(
+                "Missing google-cloud-monitoring. Install: pip install google-cloud-monitoring"
+            )
+
+        client = monitoring_v3.AlertPolicyServiceClient(credentials=credentials)
+        project_name = f"projects/{project_id}"
+
+        db_id = f"{project_id}:{instance_name}"
+
+        metric_filter = (
+            f"{custom_data['gcp_metric']} AND "
+            f"{custom_data['resource_type']} AND "
+            f'resource.labels.database_id="{db_id}"'
+        )
+
+        condition = monitoring_v3.AlertPolicy.Condition(
+            display_name=f"{custom_data['label']} threshold",
+            condition_threshold=monitoring_v3.AlertPolicy.Condition.MetricThreshold(
+                filter=metric_filter,
+                comparison=DatabaseAlertPolicyOrchestrator._comparison_enum(
+                    custom_data["operator"]
+                ),
+                threshold_value=float(custom_data["threshold_value"]),
+                duration={"seconds": int(custom_data["duration_seconds"])},
+                aggregations=[
+                    monitoring_v3.Aggregation(
+                        {
+                            "alignment_period": {
+                                "seconds": int(custom_data.get("alignment_period", 300))
+                            },
+                            "per_series_aligner": custom_data.get(
+                                "aligner",
+                                monitoring_v3.Aggregation.Aligner.ALIGN_MEAN,
+                            ),
+                        }
+                    )
+                ],
+            ),
+        )
+
+        policy = monitoring_v3.AlertPolicy(
+            display_name=custom_data["alert_name"],
+            combiner=monitoring_v3.AlertPolicy.ConditionCombinerType.AND,
+            conditions=[condition],
+            enabled=True,
+        )
+
+        created_policy = client.create_alert_policy(
+            name=project_name, alert_policy=policy
+        )
+
+        return {
+            "status": "success",
+            "policy_name": created_policy.name,
+            "display_name": created_policy.display_name,
+        }
+
+
 class MetricsOrchestrator:
     @staticmethod
-    def get_metric_data(creds, project_id, metric_filter, aligner, lookback_hours=1):
+    def get_metric_data(
+        creds,
+        project_id,
+        metric_filter,
+        aligner,
+        lookback_hours=1,
+        alignment_seconds=60,
+        cross_series_reducer=None,
+        group_by_fields=None,
+    ):
         from google.cloud import monitoring_v3
-        import datetime  # 🟢 Use standard datetime for cleaner logic
+        import datetime
 
         client = monitoring_v3.MetricServiceClient(credentials=creds)
         project_name = f"projects/{project_id}"
 
-        # 🟢 Correct way to handle Timestamps in the modern SDK:
         now = datetime.datetime.now(datetime.timezone.utc)
         start_time = now - datetime.timedelta(hours=lookback_hours)
 
-        # The SDK accepts Python datetime objects directly! No need for .Timestamp
         interval = monitoring_v3.TimeInterval(
             {"end_time": now, "start_time": start_time}
         )
 
-        # 🟢 Correct way to handle Duration (use a dict or the helper):
-        # 🟢 FIX: Safe Aggregation for GKE Metrics
-        aggregation = monitoring_v3.Aggregation(
-            {
-                "alignment_period": {"seconds": 60},
-                "per_series_aligner": aligner,
-                # We use REDUCE_MEAN to get the average CPU/Memory across all nodes in the cluster
-                "cross_series_reducer": monitoring_v3.Aggregation.Reducer.REDUCE_MEAN,
-                # Note the "labels" pluralization here, which GCP expects
-                "group_by_fields": ["resource.labels.cluster_name"],
-            }
-        )
+        aggregation_config = {
+            "alignment_period": {"seconds": int(alignment_seconds)},
+            "per_series_aligner": aligner,
+        }
+
+        if cross_series_reducer is not None:
+            aggregation_config["cross_series_reducer"] = cross_series_reducer
+
+        if group_by_fields:
+            aggregation_config["group_by_fields"] = group_by_fields
+
+        aggregation = monitoring_v3.Aggregation(aggregation_config)
 
         try:
             results = client.list_time_series(
-                name=project_name,
-                filter=metric_filter,
-                interval=interval,
-                view=monitoring_v3.ListTimeSeriesRequest.TimeSeriesView.FULL,
-                aggregation=aggregation,
+                request={
+                    "name": project_name,
+                    "filter": metric_filter,
+                    "interval": interval,
+                    "view": monitoring_v3.ListTimeSeriesRequest.TimeSeriesView.FULL,
+                    "aggregation": aggregation,
+                }
             )
 
             data_points = []
             for series in results:
                 if series.points:
-                    # Get the most recent point (GCP returns newest first)
                     point = series.points[0]
-                    # Check for different value types
-                    val = (
-                        point.value.double_value
-                        if point.value.double_value != 0
-                        else point.value.int64_value
-                    )
+
+                    if (
+                        point.value.double_value is not None
+                        and point.value.double_value != 0
+                    ):
+                        val = point.value.double_value
+                    elif point.value.int64_value is not None:
+                        val = point.value.int64_value
+                    else:
+                        val = 0
+
                     data_points.append({"value": val})
 
             return {"status": "success", "data": data_points}
+
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
@@ -4111,73 +4649,6 @@ def main() -> int:
                             input("\nPress Enter to return to tabs...")
                             continue
 
-                            # HEALTH CHECKS TAB FOR ROUTES
-                        elif selected_tab == "Health Checks" and cat_key == "route":
-                            print("\n" + "=" * 60)
-                            print(f"🩺 ROUTE HEALTH CHECKS: {selected_res.name}")
-                            print("=" * 60)
-
-                            dest_range = selected_res.raw.get(
-                                "dest_range", ""
-                            ) or selected_res.raw.get("destRange", "")
-                            priority = selected_res.raw.get("priority", 1000)
-                            network = selected_res.raw.get("network")
-
-                            all_routes = NetworkOrchestrator.list_resources(
-                                "route", creds, project_id
-                            )
-                            all_network_routes = [
-                                r for r in all_routes if r.raw.get("network") == network
-                            ]
-
-                            exact_duplicates = [
-                                r.name
-                                for r in all_network_routes
-                                if (
-                                    r.raw.get("dest_range") == dest_range
-                                    or r.raw.get("destRange") == dest_range
-                                )
-                                and r.name != selected_res.name
-                            ]
-
-                            if exact_duplicates:
-                                print("⚠ WARNING: Overlapping routes detected!")
-                                print(
-                                    f"  This route shares the exact same CIDR ({dest_range}) with: {', '.join(exact_duplicates)}"
-                                )
-                                print(
-                                    "  GCP will route traffic based on Priority (lower number wins)."
-                                )
-                            else:
-                                print(
-                                    "✅ PASS: No exact duplicate destination ranges found."
-                                )
-
-                            next_hop = selected_res.raw.get("next_hop") or "N/A"
-                            if next_hop == "N/A":
-                                print(
-                                    "❌ FAIL: Invalid Next Hop. This route does not have a valid forwarding target."
-                                )
-                            else:
-                                print(
-                                    f"✅ PASS: Next hop target is defined: {str(next_hop).split('/')[-1]}"
-                                )
-
-                            if priority == 1000:
-                                print("✅ PASS: Using standard priority (1000).")
-                            elif priority < 1000:
-                                print(
-                                    f"💡 NOTE: High priority route ({priority}). This will override standard routes."
-                                )
-                            else:
-                                print(
-                                    f"💡 NOTE: Low priority route ({priority}). This acts as a fallback."
-                                )
-
-                            print("=" * 60)
-                            input("\nPress Enter to return to tabs...")
-                            continue
-
                         # 🟢 NEW: HEALTH CHECKS TAB FOR ROUTES
                         elif selected_tab == "Health Checks" and cat_key == "route":
                             print("\n" + "=" * 60)
@@ -4601,7 +5072,11 @@ def main() -> int:
                             )
 
                             for metric_key, metric_info in metrics_to_fetch.items():
-                                gke_filter = f'{metric_info["gcp_metric"]} AND {metric_info["resource_type"]} AND resource.labels.cluster_name="{selected_res.name}"'
+                                gke_filter = (
+                                    f"{metric_info['gcp_metric']} AND "
+                                    f"{metric_info['resource_type']} AND "
+                                    f'resource.labels.cluster_name="{selected_res.name}"'
+                                )
 
                                 result = MetricsOrchestrator.get_metric_data(
                                     creds=creds,
@@ -4609,6 +5084,8 @@ def main() -> int:
                                     metric_filter=gke_filter,
                                     aligner=metric_info["aligner"],
                                     lookback_hours=lookback_hours,
+                                    cross_series_reducer=monitoring_v3.Aggregation.Reducer.REDUCE_MEAN,
+                                    group_by_fields=["resource.labels.cluster_name"],
                                 )
 
                                 if (
@@ -4651,7 +5128,11 @@ def main() -> int:
                             )
 
                             for metric_key, metric_info in metrics_to_fetch.items():
-                                gke_filter = f'{metric_info["gcp_metric"]} AND {metric_info["resource_type"]} AND resource.labels.cluster_name="{selected_res.name}"'
+                                gke_filter = (
+                                    f"{metric_info['gcp_metric']} AND "
+                                    f"{metric_info['resource_type']} AND "
+                                    f'resource.labels.cluster_name="{selected_res.name}"'
+                                )
 
                                 result = MetricsOrchestrator.get_metric_data(
                                     creds=creds,
@@ -4659,6 +5140,8 @@ def main() -> int:
                                     metric_filter=gke_filter,
                                     aligner=metric_info["aligner"],
                                     lookback_hours=lookback_hours,
+                                    cross_series_reducer=monitoring_v3.Aggregation.Reducer.REDUCE_MEAN,
+                                    group_by_fields=["resource.labels.cluster_name"],
                                 )
 
                                 if (
@@ -4707,7 +5190,11 @@ def main() -> int:
                             )
 
                             for metric_key, metric_info in metrics_to_fetch.items():
-                                gke_filter = f'{metric_info["gcp_metric"]} AND {metric_info["resource_type"]} AND resource.labels.cluster_name="{selected_res.name}"'
+                                gke_filter = (
+                                    f"{metric_info['gcp_metric']} AND "
+                                    f"{metric_info['resource_type']} AND "
+                                    f'resource.labels.cluster_name="{selected_res.name}"'
+                                )
 
                                 result = MetricsOrchestrator.get_metric_data(
                                     creds=creds,
@@ -4715,6 +5202,8 @@ def main() -> int:
                                     metric_filter=gke_filter,
                                     aligner=metric_info["aligner"],
                                     lookback_hours=lookback_hours,
+                                    cross_series_reducer=monitoring_v3.Aggregation.Reducer.REDUCE_MEAN,
+                                    group_by_fields=["resource.labels.cluster_name"],
                                 )
 
                                 if (
@@ -4754,162 +5243,493 @@ def main() -> int:
                             print("=" * 60)
                             input("\nPress Enter to return to tabs...")
                             continue
+                        # ==========================================
+                        # 🗄️ DATABASE (CLOUD SQL) ROUTING LOGIC
+                        # ==========================================
+                    elif selected_service == "database":
+                        db_version_raw = selected_res.raw.get(
+                            "database_version", "UNKNOWN"
+                        ).upper()
+
+                        if db_version_raw.startswith("MYSQL"):
+                            db_engine = "MYSQL"
+                        elif db_version_raw.startswith("POSTGRES"):
+                            db_engine = "POSTGRES"
+                        elif "SQLSERVER" in db_version_raw:
+                            db_engine = "SQLSERVER"
+                        else:
+                            db_engine = "UNKNOWN"
+
+                        if selected_tab == "Overview":
+                            print("\n" + "=" * 60)
+                            print(f"🗄️ CLOUD SQL OVERVIEW: {selected_res.name}")
+                            print("=" * 60)
+                            print(f"Location:        {selected_res.location}")
+                            print(f"State:           {selected_res.status}")
+                            print(f"Engine Type:     {db_engine}")
+                            print(f"Version String:  {db_version_raw}")
+                            print(
+                                f"Machine Tier:    {selected_res.raw.get('tier', 'UNKNOWN')}"
+                            )
+                            print(
+                                f"GCE Zone:        {selected_res.raw.get('gce_zone', 'N/A')}"
+                            )
+                            print("=" * 60)
+                            input("\nPress Enter to return to tabs...")
+                            continue
+
+                        tab_to_catalog = {
+                            "Performance Metrics": ["cpu", "memory", "insights"],
+                            "Storage Metrics": ["storage"],
+                            "Connections": ["connections", "network"],
+                            "Replication": ["replication", "health"],
+                        }
+
+                        if selected_tab in tab_to_catalog:
+                            print("\n" + "=" * 60)
+                            print(
+                                f"📊 {selected_tab.upper()}: {selected_res.name} ({db_engine})"
+                            )
+                            print("=" * 60)
+
+                            metrics_to_fetch = {}
+                            keys_to_pull = tab_to_catalog[selected_tab]
+
+                            for key in keys_to_pull:
+                                if key in DATABASE_MONITORING_CATALOG["common"]:
+                                    common_block = DATABASE_MONITORING_CATALOG[
+                                        "common"
+                                    ][key]
+                                    metrics_to_fetch.update(
+                                        common_block.get("metrics", common_block)
+                                    )
+
+                                if db_engine in DATABASE_MONITORING_CATALOG.get(
+                                    "engine_specific", {}
+                                ):
+                                    if (
+                                        key
+                                        in DATABASE_MONITORING_CATALOG[
+                                            "engine_specific"
+                                        ][db_engine]
+                                    ):
+                                        engine_block = DATABASE_MONITORING_CATALOG[
+                                            "engine_specific"
+                                        ][db_engine][key]
+                                        metrics_to_fetch.update(
+                                            engine_block.get("metrics", engine_block)
+                                        )
+
+                            if not metrics_to_fetch:
+                                print(
+                                    f"No metrics mapped for {selected_tab} on {db_engine}."
+                                )
+                            else:
+                                print(
+                                    f"Fetching {len(metrics_to_fetch)} metrics from GCP..."
+                                )
+
+                                db_id = f"{project_id}:{selected_res.name}"
+
+                                for metric_key, metric_info in metrics_to_fetch.items():
+                                    db_filter = (
+                                        f"{metric_info['gcp_metric']} AND "
+                                        f"{metric_info['resource_type']} AND "
+                                        f'resource.labels.database_id="{db_id}"'
+                                    )
+
+                                    result = MetricsOrchestrator.get_metric_data(
+                                        creds=creds,
+                                        project_id=project_id,
+                                        metric_filter=db_filter,
+                                        aligner=metric_info["aligner"],
+                                        lookback_hours=24,
+                                    )
+
+                                    if (
+                                        result
+                                        and result.get("status") == "success"
+                                        and result.get("data")
+                                    ):
+                                        val = result["data"][0]["value"]
+                                        if (
+                                            metric_info.get("transform")
+                                            == "fraction_to_percent"
+                                        ):
+                                            val = val * 100
+                                        print(
+                                            f"✅ {metric_info['label']}: {val:.2f} {metric_info.get('unit', '')}"
+                                        )
+                                    else:
+                                        print(
+                                            f"⚠️ {metric_info['label']}: No data found"
+                                        )
+
+                            print("=" * 60)
+                            input("\nPress Enter to return to tabs...")
+                            continue
+
+                        elif selected_tab == "Logs":
+                            print("\n" + "=" * 60)
+                            print(f"📜 DATABASE LOGS: {selected_res.name}")
+                            print("=" * 60)
+
+                            try:
+                                logs = DatabaseLogsOrchestrator.get_recent_logs(
+                                    creds=creds,
+                                    project_id=project_id,
+                                    instance_name=selected_res.name,
+                                    limit=20,
+                                )
+
+                                if not logs:
+                                    print("No recent database logs found.")
+                                else:
+                                    for i, log in enumerate(logs, start=1):
+                                        ts = log.get("timestamp", "N/A")
+                                        sev = log.get("severity", "DEFAULT")
+                                        msg = log.get("message", "")
+                                        print(f"{i}. [{ts}] [{sev}]")
+                                        print(f"   {msg}\n")
+
+                            except Exception as e:
+                                print(f"❌ Failed to fetch database logs: {e}")
+
+                            print("=" * 60)
+                            input("\nPress Enter to return to tabs...")
+                            continue
+
+                        elif selected_tab == "Alerts":
+                            print("\n" + "=" * 60)
+                            print(f"🚨 ALERTS FOR DATABASE: {selected_res.name}")
+                            print("=" * 60)
+                            print("1: View Existing Alerts")
+                            print("2: Create New Alert Policy")
+
+                            alert_choice = input(
+                                "\nEnter choice (or press Enter to go back): "
+                            ).strip()
+                            if not alert_choice:
+                                continue
+
+                            if alert_choice == "1":
+                                try:
+                                    alerts = DatabaseAlertPolicyOrchestrator.list_database_alerts(
+                                        creds=creds,
+                                        project_id=project_id,
+                                        instance_name=selected_res.name,
+                                    )
+
+                                    if not alerts:
+                                        print("No alerts configured for this database.")
+                                    else:
+                                        print(json.dumps(alerts, indent=2))
+
+                                except Exception as e:
+                                    print(f"❌ Failed to fetch database alerts: {e}")
+
+                            elif alert_choice == "2":
+                                custom_data = configure_custom_database_metric(
+                                    creds, project_id, selected_res.name
+                                )
+
+                                if custom_data:
+                                    print("\n🚨 SUMMARY: ALERT TO BE CREATED IN GCP")
+                                    print(f"Alert Name: {custom_data['alert_name']}")
+                                    print(f"Metric:     {custom_data['label']}")
+                                    print(
+                                        f"Condition:  {custom_data['operator']} {custom_data['threshold_value']} {custom_data['unit']}"
+                                    )
+
+                                    confirm = (
+                                        input(
+                                            "\nPush this configuration to Google Cloud now? (y/n): "
+                                        )
+                                        .strip()
+                                        .lower()
+                                    )
+
+                                    if confirm == "y":
+                                        try:
+                                            DatabaseAlertPolicyOrchestrator.create_database_alert_policy(
+                                                credentials=creds,
+                                                project_id=project_id,
+                                                instance_name=selected_res.name,
+                                                custom_data=custom_data,
+                                            )
+                                            print(
+                                                "\n✅ DATABASE ALERT POLICY CREATED SUCCESSFULLY!"
+                                            )
+                                        except Exception as e:
+                                            print(f"\n❌ Failed to create alert: {e}")
+                                    else:
+                                        print("Cancelled.")
+
+                            print("=" * 60)
+                            input("\nPress Enter to return to tabs...")
+                            continue
+
+                        elif selected_tab == "Logs":
+                            print("\n" + "=" * 60)
+                            print(f"📜 DATABASE LOGS: {selected_res.name}")
+                            print("=" * 60)
+
+                            try:
+                                logs = DatabaseLogsOrchestrator.get_recent_logs(
+                                    creds=creds,
+                                    project_id=project_id,
+                                    instance_name=selected_res.name,
+                                    limit=20,
+                                )
+
+                                if not logs:
+                                    print("No recent database logs found.")
+                                else:
+                                    for i, log in enumerate(logs, start=1):
+                                        ts = log.get("timestamp", "N/A")
+                                        sev = log.get("severity", "DEFAULT")
+                                        msg = log.get("message", "")
+                                        print(f"{i}. [{ts}] [{sev}]")
+                                        print(f"   {msg}\n")
+
+                            except Exception as e:
+                                print(f"❌ Failed to fetch database logs: {e}")
+
+                            print("=" * 60)
+                            input("\nPress Enter to return to tabs...")
+                            continue
+
+                        elif selected_tab == "Alerts":
+                            print("\n" + "=" * 60)
+                            print(f"🚨 ALERTS FOR DATABASE: {selected_res.name}")
+                            print("=" * 60)
+                            print("1: View Existing Alerts")
+                            print("2: Create New Alert Policy")
+
+                            alert_choice = input(
+                                "\nEnter choice (or press Enter to go back): "
+                            ).strip()
+                            if not alert_choice:
+                                continue
+
+                            if alert_choice == "1":
+                                try:
+                                    alerts = DatabaseAlertPolicyOrchestrator.list_database_alerts(
+                                        creds=creds,
+                                        project_id=project_id,
+                                        instance_name=selected_res.name,
+                                    )
+
+                                    if not alerts:
+                                        print("No alerts configured for this database.")
+                                    else:
+                                        print(json.dumps(alerts, indent=2))
+
+                                except Exception as e:
+                                    print(f"❌ Failed to fetch database alerts: {e}")
+
+                            elif alert_choice == "2":
+                                custom_data = configure_custom_database_metric(
+                                    creds, project_id, selected_res.name
+                                )
+
+                                if custom_data:
+                                    print("\n🚨 SUMMARY: ALERT TO BE CREATED IN GCP")
+                                    print(f"Alert Name: {custom_data['alert_name']}")
+                                    print(f"Metric:     {custom_data['label']}")
+                                    print(
+                                        f"Condition:  {custom_data['operator']} {custom_data['threshold_value']} {custom_data['unit']}"
+                                    )
+
+                                    confirm = (
+                                        input(
+                                            "\nPush this configuration to Google Cloud now? (y/n): "
+                                        )
+                                        .strip()
+                                        .lower()
+                                    )
+
+                                    if confirm == "y":
+                                        try:
+                                            DatabaseAlertPolicyOrchestrator.create_database_alert_policy(
+                                                credentials=creds,
+                                                project_id=project_id,
+                                                instance_name=selected_res.name,
+                                                custom_data=custom_data,
+                                            )
+                                            print(
+                                                "\n✅ DATABASE ALERT POLICY CREATED SUCCESSFULLY!"
+                                            )
+                                        except Exception as e:
+                                            print(f"\n❌ Failed to create alert: {e}")
+                                    else:
+                                        print("Cancelled.")
+
+                            print("=" * 60)
+                            input("\nPress Enter to return to tabs...")
+                            continue
 
                     # =======================================================
-                    # --- ROUTING LOGIC (This is your existing VM logic) ---
+                    # 🖥️ VM ROUTING LOGIC
                     # =======================================================
+                    elif selected_service == "vm":
+                        if selected_tab == "Logs":
+                            print(f"\n📜 Fetching logs for: {selected_res.name}...")
+                            formatted_logs = VmLogsOrchestrator.get_recent_logs(
+                                creds, project_id, str(selected_res.id), limit=10
+                            )
+                            print(f"\n📜 Recent Logs for VM: {selected_res.name}")
+                            print("-" * 50)
+                            for i, log in enumerate(formatted_logs, start=1):
+                                ts = log["timestamp"].replace("T", " ")[:19]
+                                print(
+                                    f"{i}. [{ts}] [{log['severity']}] [{log['log_name']}]"
+                                )
+                                print(f"   {log['message']}\n")
+                            print("-" * 50)
+                            input("\nPress Enter to return to tabs...")
+                            continue
 
-                    if selected_tab == "Logs":
-                        print(f"\n📜 Fetching logs for: {selected_res.name}...")
-                        formatted_logs = VmLogsOrchestrator.get_recent_logs(
-                            creds, project_id, str(selected_res.id), limit=10
-                        )
-                        print(f"\n📜 Recent Logs for VM: {selected_res.name}")
-                        print("-" * 50)
-                        for i, log in enumerate(formatted_logs, start=1):
-                            ts = log["timestamp"].replace("T", " ")[:19]
+                        elif selected_tab == "Events":
                             print(
-                                f"{i}. [{ts}] [{log['severity']}] [{log['log_name']}]"
+                                f"\n⚡ Fetching recent System Events for VM: {selected_res.name}..."
                             )
-                            print(f"   {log['message']}\n")
-                        print("-" * 50)
-                        input("\nPress Enter to return to tabs...")
-                        continue
+                            events = VmSystemOrchestrator.get_audit_events(
+                                creds, project_id, str(selected_res.id)
+                            )
+                            if not events:
+                                print(
+                                    "No recent system events found in the last 24 hours."
+                                )
+                            else:
+                                print(json.dumps(events, indent=2))
+                            input("\nPress Enter to return to tabs...")
+                            continue
 
-                    elif selected_tab == "Events":
-                        print(
-                            f"\n⚡ Fetching recent System Events for VM: {selected_res.name}..."
-                        )
-                        events = VmSystemOrchestrator.get_audit_events(
-                            creds, project_id, str(selected_res.id)
-                        )
-                        if not events:
-                            print("No recent system events found in the last 24 hours.")
-                        else:
-                            print(json.dumps(events, indent=2))
-                        input("\nPress Enter to return to tabs...")
-                        continue
-
-                    elif selected_tab == "Alerts":
-                        print(
-                            f"\n🔍 Searching GCP for Alerts attached to VM: {selected_res.name}..."
-                        )
-                        alerts = VmSystemOrchestrator.list_vm_alerts(
-                            creds, project_id, str(selected_res.id)
-                        )
-                        if not alerts:
+                        elif selected_tab == "Alerts":
                             print(
-                                "No❌❌ alert policies are currently configured for this VM.\nTip: Navigate to CPU, Memory, Disk, or Network tabs to create an ALERT POLICY🚨🚨."
+                                f"\n🔍 Searching GCP for Alerts attached to VM: {selected_res.name}..."
                             )
+                            alerts = VmSystemOrchestrator.list_vm_alerts(
+                                creds, project_id, str(selected_res.id)
+                            )
+                            if not alerts:
+                                print(
+                                    "No❌❌ alert policies are currently configured for this VM.\nTip: Navigate to CPU, Memory, Disk, or Network tabs to create an ALERT POLICY🚨🚨."
+                                )
+                            else:
+                                print(json.dumps(alerts, indent=2))
+                            input("\nPress Enter to return to tabs...")
+                            continue
+
+                        # --- 🚨 THE ALERT CONFIGURATOR FLOW 🚨 ---
+                        print(f"\n⚙️ Configure Alert Policy for VM: {selected_res.name}")
+
+                        metric_key = choose_metric_from_catalog_interactive(
+                            selected_tab
+                        )
+                        if not metric_key:
+                            continue  # Goes back to Tab Menu!
+
+                        metric_cfg = VmMonitoringCatalog.get_metric_config(metric_key)
+
+                        if metric_key == "custom_cpu":
+                            custom_data = configure_custom_cpu_metric()
+                        elif metric_key == "custom_memory":
+                            custom_data = configure_custom_memory_metric()
+                        elif metric_key == "custom_disk":
+                            custom_data = configure_custom_disk_metric()
+                        elif metric_key == "custom_network":
+                            custom_data = configure_custom_network_metric()
+                        elif metric_key == "custom_process":
+                            custom_data = configure_custom_process_metric()
                         else:
-                            print(json.dumps(alerts, indent=2))
+                            operator = choose_operator_interactive()
+                            if not operator:
+                                continue
+                            threshold_value = choose_threshold_interactive(metric_key)
+                            if threshold_value is None:
+                                continue
+                            duration_seconds = choose_duration_interactive()
+                            if duration_seconds is None:
+                                continue
+                            custom_data = None
+
+                        if custom_data:
+                            metric_cfg.update(
+                                {
+                                    "alert_name": custom_data["alert_name"],
+                                    "label": custom_data["label"],
+                                    "unit": custom_data["unit"],
+                                    "gcp_metric": custom_data["gcp_metric"],
+                                    "transform": custom_data["transform"],
+                                    "alignment_period": custom_data["alignment_period"],
+                                }
+                            )
+                            if "aligner" in custom_data:
+                                metric_cfg["aligner"] = custom_data["aligner"]
+                            if "cross_series_reducer" in custom_data:
+                                metric_cfg["cross_series_reducer"] = custom_data[
+                                    "cross_series_reducer"
+                                ]
+
+                            operator = custom_data["operator"]
+                            threshold_value = custom_data["threshold_value"]
+                            duration_seconds = custom_data["duration_seconds"]
+
+                        # --- 🚨 FINAL SUMMARY AND PUSH TO GCP 🚨 ---
+                        print("\n" + "=" * 50)
+                        print("🚨 SUMMARY: ALERT TO BE CREATED IN GCP")
+                        print("=" * 50)
+                        print(f"Resource: VM {selected_res.name}")
+                        alert_name_display = metric_cfg.get(
+                            "alert_name", metric_cfg["label"]
+                        )
+                        print(f"Alert Name: {alert_name_display}")
+                        print(f"Metric:   {metric_cfg['label']}")
+                        unit_str = (
+                            f" {metric_cfg['unit']}" if metric_cfg["unit"] else ""
+                        )
+                        print(f"Condition: {operator} {threshold_value}{unit_str}")
+                        print(f"Duration: {duration_seconds} seconds")
+                        print("=" * 50)
+
+                        confirm = (
+                            input(
+                                "\nPush this configuration to Google Cloud now? (y/n): "
+                            )
+                            .strip()
+                            .lower()
+                        )
+
+                        if confirm == "y":
+                            final_policy_name = metric_cfg.get(
+                                "alert_name",
+                                f"Lens Auto-Alert | {selected_res.name} | {metric_cfg['label']}",
+                            )
+                            print("\nPushing to Cloud Monitoring API...")
+                            try:
+                                VmAlertPolicyOrchestrator.create_vm_alert_policy(
+                                    credentials=creds,
+                                    project_id=project_id,
+                                    instance_ids=[str(selected_res.id)],
+                                    instance_names=[selected_res.name],
+                                    metric_key=metric_key,
+                                    threshold_value=threshold_value,
+                                    operator=operator,
+                                    duration_seconds=duration_seconds,
+                                    policy_display_name=final_policy_name,
+                                )
+                                print("\n✅ ALERT POLICY CREATED SUCCESSFULLY!")
+                            except Exception as e:
+                                print(f"\n❌ Failed to create alert policy: {e}")
+                        else:
+                            print("\nOperation cancelled.")
+
                         input("\nPress Enter to return to tabs...")
                         continue
-
-                    # --- 🚨 THE ALERT CONFIGURATOR FLOW 🚨 ---
-                    print(f"\n⚙️ Configure Alert Policy for VM: {selected_res.name}")
-
-                    metric_key = choose_metric_from_catalog_interactive(selected_tab)
-                    if not metric_key:
-                        continue  # Goes back to Tab Menu!
-
-                    metric_cfg = VmMonitoringCatalog.get_metric_config(metric_key)
-
-                    if metric_key == "custom_cpu":
-                        custom_data = configure_custom_cpu_metric()
-                    elif metric_key == "custom_memory":
-                        custom_data = configure_custom_memory_metric()
-                    elif metric_key == "custom_disk":
-                        custom_data = configure_custom_disk_metric()
-                    elif metric_key == "custom_network":
-                        custom_data = configure_custom_network_metric()
-                    elif metric_key == "custom_process":
-                        custom_data = configure_custom_process_metric()
-                    else:
-                        operator = choose_operator_interactive()
-                        if not operator:
-                            continue
-                        threshold_value = choose_threshold_interactive(metric_key)
-                        if threshold_value is None:
-                            continue
-                        duration_seconds = choose_duration_interactive()
-                        if duration_seconds is None:
-                            continue
-                        custom_data = None
-
-                    if custom_data:
-                        metric_cfg.update(
-                            {
-                                "alert_name": custom_data["alert_name"],
-                                "label": custom_data["label"],
-                                "unit": custom_data["unit"],
-                                "gcp_metric": custom_data["gcp_metric"],
-                                "transform": custom_data["transform"],
-                                "alignment_period": custom_data["alignment_period"],
-                            }
-                        )
-                        if "aligner" in custom_data:
-                            metric_cfg["aligner"] = custom_data["aligner"]
-                        if "cross_series_reducer" in custom_data:
-                            metric_cfg["cross_series_reducer"] = custom_data[
-                                "cross_series_reducer"
-                            ]
-
-                        # 🟢 FIX: Moved these INSIDE the if-block!
-                        operator = custom_data["operator"]
-                        threshold_value = custom_data["threshold_value"]
-                        duration_seconds = custom_data["duration_seconds"]
-
-                    # --- 🚨 FINAL SUMMARY AND PUSH TO GCP 🚨 ---
-                    print("\n" + "=" * 50)
-                    print("🚨 SUMMARY: ALERT TO BE CREATED IN GCP")
-                    print("=" * 50)
-                    print(f"Resource: VM {selected_res.name}")
-                    alert_name_display = metric_cfg.get(
-                        "alert_name", metric_cfg["label"]
-                    )
-                    print(f"Alert Name: {alert_name_display}")
-                    print(f"Metric:   {metric_cfg['label']}")
-                    unit_str = f" {metric_cfg['unit']}" if metric_cfg["unit"] else ""
-                    print(f"Condition: {operator} {threshold_value}{unit_str}")
-                    print(f"Duration: {duration_seconds} seconds")
-                    print("=" * 50)
-
-                    confirm = (
-                        input("\nPush this configuration to Google Cloud now? (y/n): ")
-                        .strip()
-                        .lower()
-                    )
-
-                    if confirm == "y":
-                        final_policy_name = metric_cfg.get(
-                            "alert_name",
-                            f"Lens Auto-Alert | {selected_res.name} | {metric_cfg['label']}",
-                        )
-                        print("\nPushing to Cloud Monitoring API...")
-                        try:
-                            VmAlertPolicyOrchestrator.create_vm_alert_policy(
-                                credentials=creds,
-                                project_id=project_id,
-                                instance_ids=[str(selected_res.id)],
-                                instance_names=[selected_res.name],
-                                metric_key=metric_key,
-                                threshold_value=threshold_value,
-                                operator=operator,
-                                duration_seconds=duration_seconds,
-                                policy_display_name=final_policy_name,
-                            )
-                            print("\n✅ ALERT POLICY CREATED SUCCESSFULLY!")
-                        except Exception as e:
-                            print(f"\n❌ Failed to create alert policy: {e}")
-                    else:
-                        print("\nOperation cancelled.")
-
-                    input("\nPress Enter to return to tabs...")
-
         else:
             print("Invalid choice. Try again.")
-
     return 0
 
 
