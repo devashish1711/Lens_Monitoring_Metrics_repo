@@ -2,25 +2,17 @@
 
 from __future__ import annotations
 
-import json
-import re
 import argparse
 import base64
 import json
-import subprocess
 import os
+import re
+import subprocess
 import sys
-from dataclasses import dataclass, asdict
-from typing import Any, Dict, List, Optional, Tuple
-
-import json
-from datetime import datetime, timezone, timedelta
-
-
 import time
+from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
-
-from typing import Dict, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from google.cloud import monitoring_v3
@@ -941,6 +933,247 @@ VM_MONITORING_CATALOG = {
             },
         },
     },
+}
+
+
+# ============================================================
+# NETWORK MONITORING CATALOG
+# Each entry defines a ready-to-use GCP metric with sensible defaults.
+# gcp_metric_template uses {resource_name} as the placeholder.
+# ============================================================
+NETWORK_MONITORING_CATALOG: Dict[str, List[Dict[str, Any]]] = {
+    "vpc": [
+        {
+            "key": "net_in",
+            "label": "Network Incoming",
+            "description": "Inbound bytes/s across all VMs in this VPC",
+            "gcp_metric_template": 'metric.type="compute.googleapis.com/instance/network/received_bytes_count" AND resource.type="gce_instance" AND metadata.system_labels.network="{resource_name}"',
+            "unit": "MB/s",
+            "transform": "mb_to_bytes",
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">=",
+            "default_threshold": 100.0,
+        },
+        {
+            "key": "net_out",
+            "label": "Network Outgoing",
+            "description": "Outbound bytes/s across all VMs in this VPC",
+            "gcp_metric_template": 'metric.type="compute.googleapis.com/instance/network/sent_bytes_count" AND resource.type="gce_instance" AND metadata.system_labels.network="{resource_name}"',
+            "unit": "MB/s",
+            "transform": "mb_to_bytes",
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">=",
+            "default_threshold": 100.0,
+        },
+        {
+            "key": "packets_in",
+            "label": "Packets Received",
+            "description": "Inbound packets/s across all VMs in this VPC",
+            "gcp_metric_template": 'metric.type="compute.googleapis.com/instance/network/received_packets_count" AND resource.type="gce_instance" AND metadata.system_labels.network="{resource_name}"',
+            "unit": "packets/s",
+            "transform": "identity",
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">=",
+            "default_threshold": 10000.0,
+        },
+        {
+            "key": "packets_out",
+            "label": "Packets Sent",
+            "description": "Outbound packets/s across all VMs in this VPC",
+            "gcp_metric_template": 'metric.type="compute.googleapis.com/instance/network/sent_packets_count" AND resource.type="gce_instance" AND metadata.system_labels.network="{resource_name}"',
+            "unit": "packets/s",
+            "transform": "identity",
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">=",
+            "default_threshold": 10000.0,
+        },
+        {
+            "key": "tcp_conn",
+            "label": "Active TCP Connections",
+            "description": "Established TCP connections across VMs in this VPC (requires Ops Agent)",
+            "gcp_metric_template": 'metric.type="agent.googleapis.com/network/tcp_connections" AND resource.type="gce_instance" AND metadata.system_labels.network="{resource_name}"',
+            "unit": "connections",
+            "transform": "identity",
+            "aligner": "ALIGN_MEAN",
+            "default_operator": ">=",
+            "default_threshold": 1000.0,
+        },
+        {
+            "key": "net_errors",
+            "label": "Network Interface Errors",
+            "description": "Packet errors/s across all interfaces in this VPC (requires Ops Agent)",
+            "gcp_metric_template": 'metric.type="agent.googleapis.com/interface/errors" AND resource.type="gce_instance" AND metadata.system_labels.network="{resource_name}"',
+            "unit": "errors/s",
+            "transform": "identity",
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">=",
+            "default_threshold": 10.0,
+        },
+    ],
+    "subnet": [
+        {
+            "key": "traffic_volume",
+            "label": "Flow Log Traffic Volume",
+            "description": "Bytes/s flowing through this subnet (requires VPC Flow Logs)",
+            "gcp_metric_template": 'metric.type="logging.googleapis.com/byte_count" AND resource.type="gce_subnetwork" AND resource.labels.subnetwork_name="{resource_name}"',
+            "unit": "MB/s",
+            "transform": "mb_to_bytes",
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">=",
+            "default_threshold": 50.0,
+        },
+        {
+            "key": "log_entry_count",
+            "label": "Flow Log Entry Count",
+            "description": "Flow log entries/s — spike indicates unusual traffic (requires VPC Flow Logs)",
+            "gcp_metric_template": 'metric.type="logging.googleapis.com/log_entry_count" AND resource.type="gce_subnetwork" AND resource.labels.subnetwork_name="{resource_name}"',
+            "unit": "logs/s",
+            "transform": "identity",
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">=",
+            "default_threshold": 100.0,
+        },
+    ],
+    "firewall": [
+        {
+            "key": "hit_count",
+            "label": "Rule Hit Count",
+            "description": "Total rule hits/s (requires Firewall Rules Logging)",
+            "gcp_metric_template": 'metric.type="logging.googleapis.com/log_entry_count" AND resource.type="gce_subnetwork" AND metric.labels.firewall_name="{resource_name}"',
+            "unit": "hits/s",
+            "transform": "identity",
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">=",
+            "default_threshold": 100.0,
+        },
+        {
+            "key": "allowed_count",
+            "label": "Allowed Traffic Count",
+            "description": "Allowed connections/s — spike may indicate abuse (requires Firewall Rules Logging)",
+            "gcp_metric_template": 'metric.type="logging.googleapis.com/log_entry_count" AND resource.type="gce_subnetwork" AND metric.labels.firewall_name="{resource_name}" AND metric.labels.disposition="ALLOWED"',
+            "unit": "hits/s",
+            "transform": "identity",
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">",
+            "default_threshold": 50.0,
+        },
+        {
+            "key": "denied_count",
+            "label": "Denied Traffic Count",
+            "description": "Denied connections/s — spike indicates brute force (requires Firewall Rules Logging)",
+            "gcp_metric_template": 'metric.type="logging.googleapis.com/log_entry_count" AND resource.type="gce_subnetwork" AND metric.labels.firewall_name="{resource_name}" AND metric.labels.disposition="DENIED"',
+            "unit": "hits/s",
+            "transform": "identity",
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">",
+            "default_threshold": 20.0,
+        },
+    ],
+    "router": [
+        {
+            "key": "bgp_sessions_up",
+            "label": "BGP Sessions Up",
+            "description": "Count of established BGP sessions — alert when drops below expected",
+            "gcp_metric_template": 'metric.type="router.googleapis.com/bgp/session_up" AND resource.type="gce_router" AND resource.labels.router_id="{resource_name}"',
+            "unit": "sessions",
+            "transform": "identity",
+            "aligner": "ALIGN_MEAN",
+            "default_operator": "<",
+            "default_threshold": 1.0,
+        },
+        {
+            "key": "bgp_received_routes",
+            "label": "BGP Received Routes",
+            "description": "Routes received from BGP peers — drop signals peer issue",
+            "gcp_metric_template": 'metric.type="router.googleapis.com/bgp/received_routes_count" AND resource.type="gce_router" AND resource.labels.router_id="{resource_name}"',
+            "unit": "routes",
+            "transform": "identity",
+            "aligner": "ALIGN_MEAN",
+            "default_operator": "<",
+            "default_threshold": 1.0,
+        },
+        {
+            "key": "bgp_sent_routes",
+            "label": "BGP Sent Routes",
+            "description": "Routes advertised to BGP peers — drop signals local routing issue",
+            "gcp_metric_template": 'metric.type="router.googleapis.com/bgp/sent_routes_count" AND resource.type="gce_router" AND resource.labels.router_id="{resource_name}"',
+            "unit": "routes",
+            "transform": "identity",
+            "aligner": "ALIGN_MEAN",
+            "default_operator": "<",
+            "default_threshold": 1.0,
+        },
+    ],
+    "nat": [
+        {
+            "key": "nat_allocated_ports",
+            "label": "Allocated NAT Ports",
+            "description": "NAT source ports in use — high value risks port exhaustion",
+            "gcp_metric_template": 'metric.type="router.googleapis.com/nat/allocated_ports" AND resource.type="gce_router" AND resource.labels.router_id="{resource_name}"',
+            "unit": "ports",
+            "transform": "identity",
+            "aligner": "ALIGN_MEAN",
+            "default_operator": ">=",
+            "default_threshold": 50000.0,
+        },
+        {
+            "key": "nat_dropped_sent",
+            "label": "NAT Dropped Outbound Packets",
+            "description": "Outbound packets dropped — any value > 0 means port exhaustion",
+            "gcp_metric_template": 'metric.type="router.googleapis.com/nat/dropped_sent_packets_count" AND resource.type="gce_router" AND resource.labels.router_id="{resource_name}"',
+            "unit": "packets/s",
+            "transform": "identity",
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">",
+            "default_threshold": 0.0,
+        },
+        {
+            "key": "nat_dropped_recv",
+            "label": "NAT Dropped Inbound Packets",
+            "description": "Inbound packets dropped due to NAT configuration errors",
+            "gcp_metric_template": 'metric.type="router.googleapis.com/nat/dropped_received_packets_count" AND resource.type="gce_router" AND resource.labels.router_id="{resource_name}"',
+            "unit": "packets/s",
+            "transform": "identity",
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">",
+            "default_threshold": 0.0,
+        },
+        {
+            "key": "nat_new_conns",
+            "label": "New NAT Connections",
+            "description": "New NAT connections/s — spike indicates connection flood",
+            "gcp_metric_template": 'metric.type="router.googleapis.com/nat/new_connections_count" AND resource.type="gce_router" AND resource.labels.router_id="{resource_name}"',
+            "unit": "connections/s",
+            "transform": "identity",
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">=",
+            "default_threshold": 1000.0,
+        },
+    ],
+    "route": [
+        {
+            "key": "net_in",
+            "label": "Network Incoming (Project-wide)",
+            "description": "Inbound bytes/s — project-level view from this route's VPC",
+            "gcp_metric_template": 'metric.type="compute.googleapis.com/instance/network/received_bytes_count" AND resource.type="gce_instance"',
+            "unit": "MB/s",
+            "transform": "mb_to_bytes",
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">=",
+            "default_threshold": 100.0,
+        },
+        {
+            "key": "net_out",
+            "label": "Network Outgoing (Project-wide)",
+            "description": "Outbound bytes/s — project-level view from this route's VPC",
+            "gcp_metric_template": 'metric.type="compute.googleapis.com/instance/network/sent_bytes_count" AND resource.type="gce_instance"',
+            "unit": "MB/s",
+            "transform": "mb_to_bytes",
+            "aligner": "ALIGN_RATE",
+            "default_operator": ">=",
+            "default_threshold": 100.0,
+        },
+    ],
 }
 
 
@@ -1941,6 +2174,272 @@ class VmAlertPolicyOrchestrator:
             "metric_label": metric_cfg["label"],
         }
 
+    @staticmethod
+    def create_vm_alert_policy_multi(
+        credentials,
+        project_id: str,
+        instance_ids: List[str],
+        instance_names: List[str],
+        metric_configs: List[Dict[str, Any]],
+        combiner: str = "OR",
+        policy_display_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Creates one GCP alert policy with multiple conditions — one per selected metric.
+        combiner: "OR" fires when any condition is breached; "AND" requires all simultaneously.
+        metric_configs: list of dicts, each with keys:
+            metric_key, threshold_value, operator, duration_seconds, metric_cfg (pre-resolved config dict)
+        """
+        if monitoring_v3 is None or duration_pb2 is None:
+            raise RuntimeError(
+                "Missing dependencies. Install: pip install google-cloud-monitoring protobuf"
+            )
+
+        if not instance_ids:
+            raise ValueError("At least one instance_id is required.")
+
+        client = monitoring_v3.AlertPolicyServiceClient(credentials=credentials)
+        project_name = f"projects/{project_id}"
+
+        instance_filter = " OR ".join(
+            [f'resource.labels.instance_id="{iid}"' for iid in instance_ids]
+        )
+
+        conditions = []
+        for cond in metric_configs:
+            m_cfg = cond.get("metric_cfg") or VmAlertPolicyOrchestrator._get_metric_config(
+                cond["metric_key"]
+            )
+
+            filter_str = (
+                f"{m_cfg['resource_type']} AND "
+                f"({instance_filter}) AND "
+                f"{m_cfg['gcp_metric']}"
+            )
+
+            transformed_threshold = VmAlertPolicyOrchestrator._transform_threshold(
+                m_cfg["transform"], cond["threshold_value"]
+            )
+
+            agg_args: Dict[str, Any] = {
+                "alignment_period": duration_pb2.Duration(
+                    seconds=m_cfg.get("alignment_period", 60)
+                ),
+                "per_series_aligner": VmAlertPolicyOrchestrator._aligner_enum(
+                    m_cfg.get("aligner", "ALIGN_MEAN")
+                ),
+            }
+            if "cross_series_reducer" in m_cfg:
+                agg_args["cross_series_reducer"] = VmAlertPolicyOrchestrator._reducer_enum(
+                    m_cfg["cross_series_reducer"]
+                )
+
+            conditions.append(
+                monitoring_v3.AlertPolicy.Condition(
+                    display_name=f"{m_cfg['label']} condition",
+                    condition_threshold=monitoring_v3.AlertPolicy.Condition.MetricThreshold(
+                        filter=filter_str,
+                        comparison=VmAlertPolicyOrchestrator._comparison_enum(
+                            cond["operator"]
+                        ),
+                        threshold_value=transformed_threshold,
+                        duration=duration_pb2.Duration(seconds=cond["duration_seconds"]),
+                        aggregations=[monitoring_v3.Aggregation(**agg_args)],
+                        trigger=monitoring_v3.AlertPolicy.Condition.Trigger(count=1),
+                    ),
+                )
+            )
+
+        combiner_map = {
+            "OR": monitoring_v3.AlertPolicy.ConditionCombinerType.OR,
+            "AND": monitoring_v3.AlertPolicy.ConditionCombinerType.AND,
+        }
+        combiner_enum = combiner_map.get(
+            combiner.upper(), monitoring_v3.AlertPolicy.ConditionCombinerType.OR
+        )
+
+        if not policy_display_name:
+            labels = [
+                cond.get("metric_cfg", {}).get("label", cond["metric_key"])
+                for cond in metric_configs
+            ]
+            policy_display_name = (
+                f"Lens | {' + '.join(labels)} | {', '.join(instance_names)}"
+            )
+
+        doc_content = "Created by Lens CLI\nMetrics: " + ", ".join(
+            cond.get("metric_cfg", {}).get("label", cond["metric_key"])
+            for cond in metric_configs
+        )
+
+        policy = monitoring_v3.AlertPolicy(
+            display_name=policy_display_name,
+            combiner=combiner_enum,
+            conditions=conditions,
+            enabled=True,
+            documentation=monitoring_v3.AlertPolicy.Documentation(
+                content=doc_content,
+                mime_type="text/markdown",
+            ),
+        )
+
+        created = client.create_alert_policy(name=project_name, alert_policy=policy)
+
+        return {
+            "message": "Alert policy created successfully",
+            "policy_name": created.name,
+            "condition_count": len(conditions),
+        }
+
+
+class OpsAgentInstaller:
+    """
+    Installs Google Cloud Ops Agent on a specific GCE VM using the
+    OS Config OSPolicyAssignment API (no GCP Console access required).
+    """
+
+    @staticmethod
+    def install_on_vm(
+        credentials,
+        project_id: str,
+        zone: str,
+        instance_name: str,
+    ) -> Dict[str, Any]:
+        """
+        1. Adds a temporary label to the target VM so the OS Policy can filter to it.
+        2. Creates an OSPolicyAssignment that runs the official Ops Agent install script.
+        3. Returns assignment_id + GCP operation name so the caller can track progress.
+        """
+        try:
+            from googleapiclient.discovery import build as gapi_build
+        except ImportError:
+            raise RuntimeError(
+                "Missing google-api-python-client. Install: pip install google-api-python-client"
+            )
+
+        label_key = "ops-agent-install"
+        label_value = f"pending-{int(time.time())}"
+
+        # ── Step 1: stamp a unique label onto the VM ────────────────────────
+        compute = gapi_build("compute", "v1", credentials=credentials)
+        instance_data = compute.instances().get(
+            project=project_id, zone=zone, instance=instance_name
+        ).execute()
+
+        current_labels = dict(instance_data.get("labels", {}))
+        label_fingerprint = instance_data.get("labelFingerprint", "")
+        current_labels[label_key] = label_value
+
+        compute.instances().setLabels(
+            project=project_id,
+            zone=zone,
+            instance=instance_name,
+            body={"labels": current_labels, "labelFingerprint": label_fingerprint},
+        ).execute()
+
+        # ── Step 2: create an OSPolicyAssignment targeting that label ────────
+        osconfig = gapi_build("osconfig", "v1", credentials=credentials)
+
+        # Sanitise the assignment ID (only lowercase letters, digits, hyphens allowed)
+        safe_name = re.sub(r"[^a-z0-9-]", "-", instance_name.lower())
+        assignment_id = f"ops-agent-{safe_name}-{int(time.time())}"
+
+        # validate script: exit 100 = already installed (skip enforce)
+        # enforce script : run Google's official one-liner; exit 100 on success
+        validate_script = (
+            "systemctl is-active --quiet google-cloud-ops-agent && exit 100 || exit 0"
+        )
+        enforce_script = (
+            "curl -sSO https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh "
+            "&& bash add-google-cloud-ops-agent-repo.sh --also-install && exit 100 || exit 1"
+        )
+
+        assignment_body = {
+            "osPolicies": [
+                {
+                    "id": "install-ops-agent",
+                    "mode": "ENFORCEMENT",
+                    "resourceGroups": [
+                        {
+                            # covers Debian, Ubuntu, CentOS, RHEL, Rocky, SLES
+                            "inventoryFilters": [
+                                {"osShortName": "debian"},
+                                {"osShortName": "ubuntu"},
+                                {"osShortName": "centos"},
+                                {"osShortName": "rhel"},
+                                {"osShortName": "rocky"},
+                                {"osShortName": "sles"},
+                            ],
+                            "resources": [
+                                {
+                                    "id": "run-install-script",
+                                    "exec": {
+                                        "validate": {
+                                            "interpreter": "SHELL",
+                                            "script": validate_script,
+                                        },
+                                        "enforce": {
+                                            "interpreter": "SHELL",
+                                            "script": enforce_script,
+                                        },
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+            "instanceFilter": {
+                "inclusionLabels": [{"labels": {label_key: label_value}}]
+            },
+            "rollout": {
+                "disruptionBudget": {"fixed": 1},
+                "minWaitDuration": "0s",
+            },
+        }
+
+        operation = (
+            osconfig.projects()
+            .locations()
+            .osPolicyAssignments()
+            .create(
+                parent=f"projects/{project_id}/locations/{zone}",
+                osPolicyAssignmentId=assignment_id,
+                body=assignment_body,
+            )
+            .execute()
+        )
+
+        return {
+            "assignment_id": assignment_id,
+            "operation_name": operation.get("name", ""),
+            "label_key": label_key,
+            "label_value": label_value,
+        }
+
+    @staticmethod
+    def check_operation(credentials, operation_name: str) -> Dict[str, Any]:
+        """Poll the LRO returned by create() to see if it has finished."""
+        try:
+            from googleapiclient.discovery import build as gapi_build
+        except ImportError:
+            raise RuntimeError("Missing google-api-python-client.")
+
+        osconfig = gapi_build("osconfig", "v1", credentials=credentials)
+        # operation_name looks like
+        # projects/P/locations/ZONE/osPolicyAssignments/ID/operations/OP
+        # We can GET it via the generic operations endpoint on the parent location.
+        parts = operation_name.split("/")
+        parent = "/".join(parts[:4])  # projects/P/locations/ZONE
+        op_id = parts[-1]
+        return (
+            osconfig.projects()
+            .locations()
+            .operations()
+            .get(name=operation_name)
+            .execute()
+        )
+
 
 class VmMetricsOrchestrator:
     @staticmethod
@@ -2313,6 +2812,14 @@ class MetricsOrchestrator:
             {"end_time": now, "start_time": start_time}
         )
 
+        # Accept either a string name (e.g. "ALIGN_MEAN") or a real enum value
+        if isinstance(aligner, str):
+            aligner = getattr(
+                monitoring_v3.Aggregation.Aligner,
+                aligner,
+                monitoring_v3.Aggregation.Aligner.ALIGN_MEAN,
+            )
+
         aggregation_config = {
             "alignment_period": {"seconds": int(alignment_seconds)},
             "per_series_aligner": aligner,
@@ -2438,6 +2945,10 @@ class VmSystemOrchestrator:
     def get_audit_events(
         credentials: Credentials, project_id: str, instance_id: str
     ) -> List[Dict]:
+        if logging_v2 is None:
+            raise RuntimeError(
+                "Missing google-cloud-logging. Install: pip install google-cloud-logging"
+            )
         client = logging_v2.Client(project=project_id, credentials=credentials)
         # Filters for system events like START, STOP, MIGRATE
         filter_str = (
@@ -2527,8 +3038,10 @@ class InventoryOrchestrator:
                     name=item.get("name"),
                     service="database",
                     resource_type="cloudsql_database",
+                    project_id=project_id,
                     location=item.get("region", "UNKNOWN"),
                     status=item.get("state", "UNKNOWN"),
+                    labels={},
                     raw=item,
                 )
                 instances.append(res)
@@ -2612,12 +3125,12 @@ def choose_project_interactive(creds: Credentials) -> str:
         print("📁 PROJECT SELECTOR")
         print("=" * 70)
         for i, pid in enumerate(projects):
-            print(f"[{i}] {pid}")
+            print(f"[{i + 1}] {pid}")
 
     while True:
         # Added a clean exit instruction
         raw = input(
-            "\nEnter the project index (or type a project_id) [Press Enter to exit]: "
+            "\nEnter the project number (or type a project_id) [Press Enter to exit]: "
         ).strip()
 
         # 1. Clean Exit Strategy
@@ -2627,10 +3140,10 @@ def choose_project_interactive(creds: Credentials) -> str:
 
         # 2. Index Selection
         if raw.isdigit():
-            idx = int(raw)
+            idx = int(raw) - 1
             if 0 <= idx < len(projects):
                 return projects[idx]
-            print("Invalid index. Try again.")
+            print("Invalid number. Try again.")
 
         # 3. Manual Project ID Entry
         else:
@@ -2673,17 +3186,6 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def status_dot(status: str) -> str:
-    s = (status or "").upper()
-    if s == "RUNNING":
-        return "\033[92m●\033[0m RUNNING"
-    if s == "STOPPED":
-        return "\033[91m●\033[0m STOPPED"
-    if s == "TERMINATED":
-        return "\033[93m●\033[0m TERMINATED"
-    return f"● {s}"
-
-
 def to_unix_seconds(ts_obj) -> int:
     """
     Supports both:
@@ -2714,27 +3216,111 @@ def choose_metric_from_catalog_interactive(selected_tab: str) -> Optional[str]:
         print(f"\n🚧 Metrics for the '{selected_tab}' tab are not in the catalog yet.")
         return None
 
-    print(f"\n--- {selected_tab} Metrics ---")
-    metric_map = {}
+    _CATEGORY_ICONS = {
+        "CPU": "⚡", "Memory": "🧠", "Disk": "💾", "Network": "🌐", "Processes": "⚙️",
+    }
+    icon = _CATEGORY_ICONS.get(selected_tab, "📊")
+    W = 68
 
+    print(f"\n{'═' * W}")
+    print(f"  {icon}  {selected_tab.upper()} METRICS — Alert Configuration")
+    print(f"{'═' * W}")
+
+    metric_map = {}
     for i, metric in enumerate(metrics, start=1):
         metric_map[str(i)] = metric["key"]
+        is_custom = metric["key"].startswith("custom_")
         warn = metric["default_warning"]
         crit = metric["default_critical"]
+        needs_agent = "Requires Ops Agent" in (metric["description"] or "")
 
-        print(f"{i}: {metric['label']} ({metric['description']})")
-        if warn is not None or crit is not None:
-            print(
-                f"   Warning: {warn} {metric['unit']} | Critical: {crit} {metric['unit']}"
-            )
+        print()
+        if is_custom:
+            print(f"  [{i}]  ✦  {metric['label']}")
+            print(f"        {metric['description']}")
+        else:
+            agent_badge = "  〔📡 Ops Agent required〕" if needs_agent else ""
+            print(f"  [{i}]  {metric['label']}{agent_badge}")
+            desc = metric["description"].replace(" (Requires Ops Agent)", "").strip()
+            print(f"        {desc}")
+            if warn is not None or crit is not None:
+                warn_str = f"{warn} {metric['unit']}" if warn is not None else "—"
+                crit_str = f"{crit} {metric['unit']}" if crit is not None else "—"
+                print(f"        🟡 Warn › {warn_str:<20}  🔴 Crit › {crit_str}")
 
-    metric_choice = input("\nEnter metric number (or press Enter to go back): ").strip()
+    print(f"\n{'─' * W}")
+    metric_choice = input("  Select metric number (or press Enter to go back): ").strip()
 
-    # If the user just presses Enter, metric_choice will be empty ("")
     if not metric_choice:
         return None
 
     return metric_map.get(metric_choice)
+
+
+def choose_metrics_from_catalog_interactive(selected_tab: str) -> List[str]:
+    """
+    Multi-select version: returns a list of metric keys.
+    User can enter comma-separated numbers (e.g. "1,3") or "all".
+    """
+    metrics = VmMonitoringCatalog.list_metrics_by_category(selected_tab)
+
+    if not metrics:
+        print(f"\n🚧 Metrics for the '{selected_tab}' tab are not in the catalog yet.")
+        return []
+
+    _CATEGORY_ICONS = {
+        "CPU": "⚡", "Memory": "🧠", "Disk": "💾", "Network": "🌐", "Processes": "⚙️",
+    }
+    icon = _CATEGORY_ICONS.get(selected_tab, "📊")
+    W = 68
+
+    print(f"\n{'═' * W}")
+    print(f"  {icon}  {selected_tab.upper()} METRICS — Multi-Select Alert Setup")
+    print(f"{'═' * W}")
+
+    metric_map = {}
+    for i, metric in enumerate(metrics, start=1):
+        metric_map[str(i)] = metric["key"]
+        is_custom = metric["key"].startswith("custom_")
+        warn = metric["default_warning"]
+        crit = metric["default_critical"]
+        needs_agent = "Requires Ops Agent" in (metric["description"] or "")
+
+        print()
+        if is_custom:
+            print(f"  [{i}]  ✦  {metric['label']}")
+            print(f"        {metric['description']}")
+        else:
+            agent_badge = "  〔📡 Ops Agent required〕" if needs_agent else ""
+            print(f"  [{i}]  {metric['label']}{agent_badge}")
+            desc = metric["description"].replace(" (Requires Ops Agent)", "").strip()
+            print(f"        {desc}")
+            if warn is not None or crit is not None:
+                warn_str = f"{warn} {metric['unit']}" if warn is not None else "—"
+                crit_str = f"{crit} {metric['unit']}" if crit is not None else "—"
+                print(f"        🟡 Warn › {warn_str:<20}  🔴 Crit › {crit_str}")
+
+    print(f"\n{'─' * W}")
+    print("  Tip: Enter one number, comma-separated (e.g. 1,3), or type 'all'.")
+    raw = input("  Select metrics (or press Enter to go back): ").strip()
+
+    if not raw:
+        return []
+
+    if raw.lower() == "all":
+        return [m["key"] for m in metrics]
+
+    selected_keys = []
+    for part in raw.split(","):
+        part = part.strip()
+        if part in metric_map:
+            key = metric_map[part]
+            if key not in selected_keys:
+                selected_keys.append(key)
+        else:
+            print(f"  Warning: '{part}' is not a valid option, skipping.")
+
+    return selected_keys
 
 
 def status_dot(status: str) -> str:
@@ -2872,10 +3458,10 @@ def configure_custom_cpu_metric() -> Dict[str, Any]:
         )
 
     print("\nSelect operator:")
-    print("1: >")
-    print("2: <")
-    print("3: >=")
-    print("4: <=")
+    print("1: Greater Than (>)")
+    print("2: Less Than (<)")
+    print("3: Greater Than or Equal To (>=)")
+    print("4: Less Than or Equal To (<=)")
     op_choice = input("> ").strip()
     op_map = {"1": ">", "2": "<", "3": ">=", "4": "<="}
     operator = op_map.get(op_choice, ">")
@@ -2950,10 +3536,10 @@ def configure_custom_memory_metric() -> Dict[str, Any]:
     selected = metric_map.get(m_type_choice, metric_map["1"])
 
     print("\nSelect operator:")
-    print("1: >")
-    print("2: <")
-    print("3: >=")
-    print("4: <=")
+    print("1: Greater Than (>)")
+    print("2: Less Than (<)")
+    print("3: Greater Than or Equal To (>=)")
+    print("4: Less Than or Equal To (<=)")
     op_choice = input("> ").strip()
 
     op_map = {"1": ">", "2": "<", "3": ">=", "4": "<="}
@@ -3058,10 +3644,10 @@ def configure_custom_disk_metric() -> Dict[str, Any]:
     selected = metric_map.get(m_type_choice, metric_map["1"])
 
     print("\nSelect operator:")
-    print("1: >")
-    print("2: <")
-    print("3: >=")
-    print("4: <=")
+    print("1: Greater Than (>)")
+    print("2: Less Than (<)")
+    print("3: Greater Than or Equal To (>=)")
+    print("4: Less Than or Equal To (<=)")
     op_choice = input("> ").strip()
 
     op_map = {"1": ">", "2": "<", "3": ">=", "4": "<="}
@@ -3208,7 +3794,7 @@ def configure_custom_network_metric(creds, project_id, network_name) -> Dict[str
         )
     # ========================================================
 
-    print("\nSelect operator:\n1: >\n2: <\n3: >=\n4: <=")
+    print("\nSelect operator:\n1: Greater Than (>)\n2: Less Than (<)\n3: Greater Than or Equal To (>=)\n4: Less Than or Equal To (<=)")
     op_choice = input("> ").strip()
     op_map = {"1": ">", "2": "<", "3": ">=", "4": "<="}
     operator = op_map.get(op_choice, selected["default_operator"])
@@ -3267,7 +3853,7 @@ def configure_custom_subnet_metric(creds, project_id, subnet_name) -> Dict[str, 
 
     selected = metric_map.get(m_type_choice, metric_map["1"])
 
-    print("\nSelect operator:\n1: >\n2: <\n3: >=\n4: <=")
+    print("\nSelect operator:\n1: Greater Than (>)\n2: Less Than (<)\n3: Greater Than or Equal To (>=)\n4: Less Than or Equal To (<=)")
     op_choice = input("> ").strip()
     op_map = {"1": ">", "2": "<", "3": ">=", "4": "<="}
     operator = op_map.get(op_choice, selected["default_operator"])
@@ -3345,7 +3931,7 @@ def configure_custom_process_metric() -> Dict[str, Any]:
 
     selected = metric_map.get(m_type_choice, metric_map["1"])
 
-    print("\nSelect operator:\n1: >\n2: <\n3: >=\n4: <=")
+    print("\nSelect operator:\n1: Greater Than (>)\n2: Less Than (<)\n3: Greater Than or Equal To (>=)\n4: Less Than or Equal To (<=)")
     op_choice = input("> ").strip()
     op_map = {"1": ">", "2": "<", "3": ">=", "4": "<="}
     operator = op_map.get(op_choice, selected["default_operator"])
@@ -3374,33 +3960,6 @@ def configure_custom_process_metric() -> Dict[str, Any]:
         result["cross_series_reducer"] = selected["cross_series_reducer"]
 
     return result
-
-
-def handle_networking_navigation(selected_res, cat_key, creds, project_id):
-    """Handles the 4-tab exploration for Networking resources."""
-    while True:
-        tabs = NetworkingCatalog.get_tabs(cat_key)
-        print(f"\nSelect a tab to open for {selected_res.name}:")
-        tab_map = {str(i + 1): t for i, t in enumerate(tabs)}
-        for k, v in tab_map.items():
-            print(f"{k}: {v}")
-
-        tab_choice = input("\nEnter tab number (or press Enter to go back): ").strip()
-        if not tab_choice:
-            return
-
-        selected_tab = tab_map.get(tab_choice)
-        if not selected_tab:
-            continue
-
-        # ROUTING: Call specific logic based on tab
-        if selected_tab == "Overview":
-            # ... (your overview logic here) ...
-            input("\nPress Enter to return to tabs...")
-        elif selected_tab == "Alerts":
-            # ... (your alerts logic here) ...
-            handle_network_alerts(selected_res, creds, project_id)
-        # Add other tabs here...
 
 
 class NetworkMetricsOrchestrator:
@@ -3876,7 +4435,7 @@ def configure_custom_firewall_metric(creds, project_id, firewall_name):
 
     selected = metric_map.get(m_type_choice, metric_map["1"])
 
-    print("\nSelect operator:\n1: >\n2: <\n3: >=\n4: <=")
+    print("\nSelect operator:\n1: Greater Than (>)\n2: Less Than (<)\n3: Greater Than or Equal To (>=)\n4: Less Than or Equal To (<=)")
     op_choice = input("> ").strip()
     op_map = {"1": ">", "2": "<", "3": ">=", "4": "<="}
     operator = op_map.get(op_choice, selected["default_operator"])
@@ -3907,6 +4466,151 @@ def configure_custom_firewall_metric(creds, project_id, firewall_name):
         "aligner": selected["aligner"],
         "resource_type": selected["resource_type"],
     }
+
+
+def configure_multi_network_metrics(
+    creds, project_id: str, resource_name: str, cat_key: str
+) -> List[Dict[str, Any]]:
+    """
+    Let the user pick one or more metrics from NETWORK_MONITORING_CATALOG,
+    configure each (threshold / operator / window), and return a list of
+    alert-ready dicts — all before a single GCP call is made.
+    """
+    from google.cloud import monitoring_v3
+    import time
+
+    catalog = NETWORK_MONITORING_CATALOG.get(cat_key) or NETWORK_MONITORING_CATALOG["vpc"]
+
+    print(f"\n{'='*62}")
+    print(f"  NETWORKING ALERTS — {resource_name}")
+    print(f"  Resource type: {cat_key.upper()}")
+    print(f"{'='*62}")
+    print("  Available metrics:\n")
+    for i, m in enumerate(catalog, 1):
+        print(f"  {i:2d}. {m['label']}")
+        print(f"      {m['description']}")
+        print(
+            f"      Unit: {m['unit']}  |  Suggested alert: {m['default_operator']} {m['default_threshold']}"
+        )
+        print()
+
+    print("Select metrics to configure (e.g.  1,3  or  all):")
+    raw = input("> ").strip().lower()
+
+    if raw == "all":
+        selected_indices = list(range(len(catalog)))
+    else:
+        selected_indices = []
+        for part in raw.split(","):
+            part = part.strip()
+            if part.isdigit():
+                idx = int(part) - 1
+                if 0 <= idx < len(catalog):
+                    selected_indices.append(idx)
+
+    if not selected_indices:
+        print("No valid metrics selected.")
+        return []
+
+    op_map = {"1": ">", "2": "<", "3": ">=", "4": "<="}
+    configured: List[Dict[str, Any]] = []
+
+    for idx in selected_indices:
+        m = catalog[idx]
+        print(f"\n{'─'*62}")
+        print(f"  [{idx + 1}] {m['label']}")
+        print(f"  {m['description']}")
+        print(f"{'─'*62}")
+
+        gcp_filter = m["gcp_metric_template"].replace("{resource_name}", resource_name)
+
+        # --- Fetch 1-hour baseline to help the user pick a threshold ---
+        print("  Fetching 1-hour baseline...")
+        try:
+            mc = monitoring_v3.MetricServiceClient(credentials=creds)
+            now = int(time.time())
+            aligner_enum = getattr(monitoring_v3.Aggregation.Aligner, m["aligner"])
+            ts_iter = mc.list_time_series(
+                request={
+                    "name": f"projects/{project_id}",
+                    "filter": gcp_filter,
+                    "interval": monitoring_v3.TimeInterval(
+                        {
+                            "end_time": {"seconds": now},
+                            "start_time": {"seconds": now - 3600},
+                        }
+                    ),
+                    "aggregation": monitoring_v3.Aggregation(
+                        {
+                            "alignment_period": {"seconds": 3600},
+                            "per_series_aligner": aligner_enum,
+                            "cross_series_reducer": monitoring_v3.Aggregation.Reducer.REDUCE_MEAN,
+                        }
+                    ),
+                }
+            )
+            baseline_val = None
+            for ts in ts_iter:
+                for p in ts.points:
+                    if p.value.HasField("double_value"):
+                        baseline_val = p.value.double_value
+                    elif p.value.HasField("int64_value"):
+                        baseline_val = float(p.value.int64_value)
+                    break
+                if baseline_val is not None:
+                    break
+            if baseline_val is not None:
+                display = (
+                    baseline_val / 1048576.0
+                    if m.get("transform") == "mb_to_bytes"
+                    else baseline_val
+                )
+                print(f"  Baseline (last 1h avg): {display:.2f} {m['unit']}")
+            else:
+                print(
+                    f"  No recent data — default threshold: {m['default_threshold']} {m['unit']}"
+                )
+        except Exception:
+            print("  Could not fetch baseline — proceeding with defaults.")
+
+        # --- Per-metric configuration ---
+        default_name = f"{resource_name}-{m['key']}-alert"
+        name_in = input(f"\n  Alert name [{default_name}]: ").strip()
+        alert_name = name_in or default_name
+
+        print(f"\n  Operator (default {m['default_operator']}):  1: Greater Than (>)  2: Less Than (<)  3: Greater Than or Equal To (>=)  4: Less Than or Equal To (<=)")
+        op_in = input("  > ").strip()
+        operator = op_map.get(op_in, m["default_operator"])
+
+        threshold_val = _read_float(
+            f"  Threshold [{m['default_threshold']} {m['unit']}]: ",
+            default=m["default_threshold"],
+        )
+        eval_window = _read_int(
+            "  Evaluation window seconds [300]: ", default=300, min_value=60
+        )
+        align_period = _read_int(
+            "  Alignment period seconds [60]: ", default=60, min_value=60
+        )
+        if align_period > eval_window:
+            align_period = eval_window
+
+        configured.append(
+            {
+                "alert_name": alert_name,
+                "label": m["label"],
+                "unit": m["unit"],
+                "gcp_metric": gcp_filter,
+                "operator": operator,
+                "threshold_value": threshold_val,
+                "duration_seconds": eval_window,
+                "alignment_period": align_period,
+                "transform": m["transform"],
+                "aligner": m["aligner"],
+            }
+        )
+
+    return configured
 
 
 def get_tabs_for_category(cat_key):
@@ -3990,7 +4694,64 @@ def main() -> int:
         project_id=args.project,
     )
 
-    creds, project_hint = AuthManager.load_credentials(conn)
+    # ── Interactive credential prompt ────────────────────────────────────────
+    # If no credential flags were passed on the CLI, guide the user to authenticate
+    # instead of silently falling through to ADC (which most users don't have).
+    if not conn.service_account_file and not conn.service_account_json and not conn.service_account_b64:
+        print("\n" + "=" * 70)
+        print("🔐  GCP AUTHENTICATION")
+        print("=" * 70)
+        print("No credentials were provided via CLI flags.\n")
+        print("How would you like to authenticate?")
+        print("  1: Enter the path to a service account JSON key file  (recommended)")
+        print("  2: Paste the raw contents of a service account JSON key")
+        print("  3: Use Application Default Credentials  (gcloud auth application-default login)")
+        auth_choice = input("\nEnter choice [default 1]: ").strip() or "1"
+
+        if auth_choice == "1":
+            path = input("\nService account JSON file path:\n> ").strip()
+            if path:
+                conn.service_account_file = path
+            else:
+                print("No path entered — falling back to Application Default Credentials.")
+
+        elif auth_choice == "2":
+            print(
+                "\nPaste your service account JSON below."
+                " Press Enter on a blank line when finished:"
+            )
+            lines: List[str] = []
+            while True:
+                line = input()
+                if not line:
+                    break
+                lines.append(line)
+            raw_json = "\n".join(lines).strip()
+            if raw_json:
+                conn.service_account_json = raw_json
+            else:
+                print("No JSON entered — falling back to Application Default Credentials.")
+
+        elif auth_choice == "3":
+            print("\nUsing Application Default Credentials...")
+        else:
+            print("Invalid choice — falling back to Application Default Credentials.")
+    # ─────────────────────────────────────────────────────────────────────────
+
+    try:
+        creds, project_hint = AuthManager.load_credentials(conn)
+    except FileNotFoundError as e:
+        print(f"\n❌  Authentication failed: {e}")
+        print("    Double-check the file path and try again.")
+        return 1
+    except Exception as e:
+        print(f"\n❌  Authentication failed: {e}")
+        return 1
+
+    # Show which service account is active (helps users confirm they used the right key)
+    sa_email = getattr(creds, "service_account_email", None)
+    if sa_email:
+        print(f"\n✅  Authenticated as: {sa_email}")
 
     # 1. Test Project Discovery
     if args.list_projects:
@@ -4050,7 +4811,7 @@ def main() -> int:
         print("🌍 SERVICE EXPLORER")
         print("=" * 70)
         print("Which service would you like to explore?")
-        print("1: VM | 2: GKE | 3: Database | 4: Networking")
+        print("1: Compute Engine (VM Instances)  |  2: Google Kubernetes Engine (GKE)  |  3: Cloud SQL (Database)  |  4: Cloud Networking")
 
         service_map = {
             "1": "vm",
@@ -4207,8 +4968,6 @@ def main() -> int:
                         if not selected_tab:
                             print("Invalid tab choice.")
                             continue
-                        print(f"DEBUG cat_key = {cat_key}")
-                        print(f"DEBUG selected_tab = {selected_tab}")
 
                         # =========================
                         # SUBNET-SPECIFIC HANDLERS
@@ -4349,12 +5108,73 @@ def main() -> int:
                                 )
 
                                 if custom_data:
+                                    # --- MULTI-SUBNET SELECTION ---
+                                    # Metric was configured for the current subnet.
+                                    # Now let the user pick which subnets to apply it to.
+                                    target_subnets = [selected_res.name]
+
+                                    if len(resources) > 1:
+                                        print(f"\nApply this alert to:")
+                                        print(
+                                            f"  1: Just this subnet ({selected_res.name})"
+                                        )
+                                        print(
+                                            f"  2: Select multiple subnets from this list"
+                                        )
+                                        scope_choice = input(
+                                            "Enter choice [default: 1]: "
+                                        ).strip()
+
+                                        if scope_choice == "2":
+                                            print(
+                                                f"\nSubnets in project {project_id}:"
+                                            )
+                                            sn_idx_map: Dict[str, str] = {}
+                                            for i, sn in enumerate(resources, 1):
+                                                sn_idx_map[str(i)] = sn.name
+                                                marker = (
+                                                    " ← current"
+                                                    if sn.name == selected_res.name
+                                                    else ""
+                                                )
+                                                print(
+                                                    f"  {i}: {sn.name}"
+                                                    f" [{sn.location or 'N/A'}]{marker}"
+                                                )
+
+                                            print(
+                                                "\nEnter subnet numbers comma-separated"
+                                                " (e.g. 1,3) or 'all':"
+                                            )
+                                            raw = input("Select subnets: ").strip()
+                                            chosen: List[str] = []
+                                            if raw.lower() == "all":
+                                                chosen = [sn.name for sn in resources]
+                                            elif raw:
+                                                for part in raw.split(","):
+                                                    part = part.strip()
+                                                    if part in sn_idx_map:
+                                                        n = sn_idx_map[part]
+                                                        if n not in chosen:
+                                                            chosen.append(n)
+                                                    else:
+                                                        print(
+                                                            f"  Warning: '{part}' is not valid, skipping."
+                                                        )
+                                            if chosen:
+                                                target_subnets = chosen
+
                                     print("\n🚨 SUMMARY: ALERT TO BE CREATED IN GCP")
                                     print(f"Alert Name: {custom_data['alert_name']}")
                                     print(f"Metric:     {custom_data['label']}")
                                     print(
                                         f"Condition:  {custom_data['operator']} {custom_data['threshold_value']} {custom_data['unit']}"
                                     )
+                                    print(
+                                        f"Applying to {len(target_subnets)} subnet(s):"
+                                    )
+                                    for sn_name in target_subnets:
+                                        print(f"  - {sn_name}")
 
                                     confirm = (
                                         input(
@@ -4364,18 +5184,44 @@ def main() -> int:
                                         .lower()
                                     )
                                     if confirm == "y":
-                                        try:
-                                            NetworkAlertPolicyOrchestrator.create_network_alert_policy(
-                                                credentials=creds,
-                                                project_id=project_id,
-                                                network_name=selected_res.name,
-                                                custom_data=custom_data,
+                                        success_count = 0
+                                        for sn_name in target_subnets:
+                                            # Rebuild filter and alert name per subnet
+                                            per_subnet = dict(custom_data)
+                                            per_subnet["gcp_metric"] = (
+                                                custom_data["gcp_metric"].replace(
+                                                    f'subnetwork_name="{selected_res.name}"',
+                                                    f'subnetwork_name="{sn_name}"',
+                                                )
                                             )
-                                            print(
-                                                "\n✅ SUBNET ALERT POLICY CREATED SUCCESSFULLY!"
-                                            )
-                                        except Exception as e:
-                                            print(f"\n❌ Failed to create alert: {e}")
+                                            if selected_res.name in custom_data["alert_name"]:
+                                                per_subnet["alert_name"] = (
+                                                    custom_data["alert_name"].replace(
+                                                        selected_res.name, sn_name
+                                                    )
+                                                )
+                                            else:
+                                                per_subnet["alert_name"] = (
+                                                    f"{custom_data['alert_name']}-{sn_name}"
+                                                )
+                                            try:
+                                                NetworkAlertPolicyOrchestrator.create_network_alert_policy(
+                                                    credentials=creds,
+                                                    project_id=project_id,
+                                                    network_name=sn_name,
+                                                    custom_data=per_subnet,
+                                                )
+                                                print(
+                                                    f"  ✅ Alert created for subnet: {sn_name}"
+                                                )
+                                                success_count += 1
+                                            except Exception as e:
+                                                print(
+                                                    f"  ❌ Failed for {sn_name}: {e}"
+                                                )
+                                        print(
+                                            f"\n✅ {success_count}/{len(target_subnets)} SUBNET ALERT POLICIES CREATED!"
+                                        )
                                     else:
                                         print("Cancelled.")
 
@@ -4899,52 +5745,53 @@ def main() -> int:
                                     print(json.dumps(alerts, indent=2))
 
                             elif alert_choice == "2":
-                                # 🟢 FIX: Route to the correct configuration menu based on the resource type!
-                                if cat_key == "firewall":
-                                    custom_data = configure_custom_firewall_metric(
-                                        creds, project_id, selected_res.name
-                                    )
-                                elif cat_key == "subnet":
-                                    custom_data = configure_custom_subnet_metric(
-                                        creds, project_id, selected_res.name
-                                    )
-                                else:
-                                    print(
-                                        f"\n⚙️ Configure Network Alert for {selected_res.name}"
-                                    )
-                                    custom_data = configure_custom_network_metric(
-                                        creds, project_id, selected_res.name
-                                    )
+                                all_configs = configure_multi_network_metrics(
+                                    creds, project_id, selected_res.name, cat_key
+                                )
 
-                                if custom_data:
-                                    print("\n🚨 SUMMARY: ALERT TO BE CREATED IN GCP")
-                                    print(f"Alert Name: {custom_data['alert_name']}")
-                                    print(f"Metric:     {custom_data['label']}")
+                                if all_configs:
+                                    print(f"\n{'='*62}")
                                     print(
-                                        f"Condition:  {custom_data['operator']} {custom_data['threshold_value']} {custom_data['unit']}"
+                                        f"  SUMMARY — {len(all_configs)} alert(s) to create"
                                     )
+                                    print(f"{'='*62}")
+                                    for i, cfg in enumerate(all_configs, 1):
+                                        print(f"  {i}. {cfg['alert_name']}")
+                                        print(f"     Metric    : {cfg['label']}")
+                                        print(
+                                            f"     Condition : {cfg['operator']} {cfg['threshold_value']} {cfg['unit']}"
+                                        )
+                                        print(
+                                            f"     Window    : {cfg['duration_seconds']}s  |  Align: {cfg['alignment_period']}s"
+                                        )
+                                    print(f"{'='*62}")
 
                                     confirm = (
                                         input(
-                                            "\nPush this configuration to Google Cloud now? (y/n): "
+                                            f"\nPush all {len(all_configs)} alert(s) to Google Cloud now? (y/n): "
                                         )
                                         .strip()
                                         .lower()
                                     )
                                     if confirm == "y":
-                                        try:
-                                            # 🟢 USES THE CORRECT NETWORK ORCHESTRATOR
-                                            NetworkAlertPolicyOrchestrator.create_network_alert_policy(
-                                                credentials=creds,
-                                                project_id=project_id,
-                                                network_name=selected_res.name,
-                                                custom_data=custom_data,
-                                            )
-                                            print(
-                                                "\n✅ ALERT POLICY CREATED SUCCESSFULLY!"
-                                            )
-                                        except Exception as e:
-                                            print(f"\n❌ Failed to create alert: {e}")
+                                        ok = 0
+                                        for cfg in all_configs:
+                                            try:
+                                                NetworkAlertPolicyOrchestrator.create_network_alert_policy(
+                                                    credentials=creds,
+                                                    project_id=project_id,
+                                                    network_name=selected_res.name,
+                                                    custom_data=cfg,
+                                                )
+                                                print(f"  ✅ Created: {cfg['alert_name']}")
+                                                ok += 1
+                                            except Exception as e:
+                                                print(
+                                                    f"  ❌ Failed ({cfg['alert_name']}): {e}"
+                                                )
+                                        print(
+                                            f"\n{ok}/{len(all_configs)} alert(s) pushed to GCP."
+                                        )
                                     else:
                                         print("Cancelled.")
                             input("\nPress Enter to return to tabs...")
@@ -4964,6 +5811,62 @@ def main() -> int:
         elif selected_service in inv.services:
             while True:  # 🔁 LEVEL 2: VM RESOURCE LOOP
                 resources = inv.services[selected_service]
+
+                if not resources:
+                    print(
+                        f"\nNo {selected_service.upper()} resources found in project {project_id}."
+                    )
+                    if selected_service == "gke":
+                        print(
+                            "\nWhen GKE clusters are running, Lens can monitor:"
+                        )
+                        print("  Cluster:   CPU utilization, Memory utilization")
+                        print(
+                            "  Node:      CPU usage, Memory used, Ephemeral storage, Node Not Ready"
+                        )
+                        print(
+                            "  Container: CPU/Memory limit utilization, Restart count"
+                        )
+                        print(
+                            "  Pod:       Network incoming/outgoing bytes"
+                        )
+                        print(
+                            "\nTo start monitoring: deploy a GKE cluster and re-run this tool."
+                        )
+                    elif selected_service == "database":
+                        print(
+                            "\nWhen Cloud SQL instances are running, Lens can monitor:"
+                        )
+                        print(
+                            "  Health:   Instance Up/Down"
+                        )
+                        print(
+                            "  CPU:      CPU Utilization, Reserved Cores"
+                        )
+                        print(
+                            "  Memory:   Memory Utilization, Usage (with/without cache)"
+                        )
+                        print(
+                            "  Storage:  Disk Utilization, Bytes Used, Read/Write Ops, Throughput"
+                        )
+                        print(
+                            "  Network:  Bytes Received, Bytes Sent"
+                        )
+                        print(
+                            "  MySQL:    Active Connections, Slow Queries, Aborted Clients, Replication Lag"
+                        )
+                        print(
+                            "  Postgres: Active Backends, Transaction Rate, Deadlocks, Cache Hit Ratio,"
+                        )
+                        print(
+                            "            Replication Lag, Temp Files"
+                        )
+                        print(
+                            "\nTo start monitoring: create a Cloud SQL instance and re-run this tool."
+                        )
+                    input("\nPress Enter to go back to Services...")
+                    break
+
                 print(
                     f"\nFound {len(resources)} resources in {selected_service.upper()}:"
                 )
@@ -5469,106 +6372,6 @@ def main() -> int:
                             input("\nPress Enter to return to tabs...")
                             continue
 
-                        elif selected_tab == "Logs":
-                            print("\n" + "=" * 60)
-                            print(f"📜 DATABASE LOGS: {selected_res.name}")
-                            print("=" * 60)
-
-                            try:
-                                logs = DatabaseLogsOrchestrator.get_recent_logs(
-                                    creds=creds,
-                                    project_id=project_id,
-                                    instance_name=selected_res.name,
-                                    limit=20,
-                                )
-
-                                if not logs:
-                                    print("No recent database logs found.")
-                                else:
-                                    for i, log in enumerate(logs, start=1):
-                                        ts = log.get("timestamp", "N/A")
-                                        sev = log.get("severity", "DEFAULT")
-                                        msg = log.get("message", "")
-                                        print(f"{i}. [{ts}] [{sev}]")
-                                        print(f"   {msg}\n")
-
-                            except Exception as e:
-                                print(f"❌ Failed to fetch database logs: {e}")
-
-                            print("=" * 60)
-                            input("\nPress Enter to return to tabs...")
-                            continue
-
-                        elif selected_tab == "Alerts":
-                            print("\n" + "=" * 60)
-                            print(f"🚨 ALERTS FOR DATABASE: {selected_res.name}")
-                            print("=" * 60)
-                            print("1: View Existing Alerts")
-                            print("2: Create New Alert Policy")
-
-                            alert_choice = input(
-                                "\nEnter choice (or press Enter to go back): "
-                            ).strip()
-                            if not alert_choice:
-                                continue
-
-                            if alert_choice == "1":
-                                try:
-                                    alerts = DatabaseAlertPolicyOrchestrator.list_database_alerts(
-                                        creds=creds,
-                                        project_id=project_id,
-                                        instance_name=selected_res.name,
-                                    )
-
-                                    if not alerts:
-                                        print("No alerts configured for this database.")
-                                    else:
-                                        print(json.dumps(alerts, indent=2))
-
-                                except Exception as e:
-                                    print(f"❌ Failed to fetch database alerts: {e}")
-
-                            elif alert_choice == "2":
-                                custom_data = configure_custom_database_metric(
-                                    creds, project_id, selected_res.name
-                                )
-
-                                if custom_data:
-                                    print("\n🚨 SUMMARY: ALERT TO BE CREATED IN GCP")
-                                    print(f"Alert Name: {custom_data['alert_name']}")
-                                    print(f"Metric:     {custom_data['label']}")
-                                    print(
-                                        f"Condition:  {custom_data['operator']} {custom_data['threshold_value']} {custom_data['unit']}"
-                                    )
-
-                                    confirm = (
-                                        input(
-                                            "\nPush this configuration to Google Cloud now? (y/n): "
-                                        )
-                                        .strip()
-                                        .lower()
-                                    )
-
-                                    if confirm == "y":
-                                        try:
-                                            DatabaseAlertPolicyOrchestrator.create_database_alert_policy(
-                                                credentials=creds,
-                                                project_id=project_id,
-                                                instance_name=selected_res.name,
-                                                custom_data=custom_data,
-                                            )
-                                            print(
-                                                "\n✅ DATABASE ALERT POLICY CREATED SUCCESSFULLY!"
-                                            )
-                                        except Exception as e:
-                                            print(f"\n❌ Failed to create alert: {e}")
-                                    else:
-                                        print("Cancelled.")
-
-                            print("=" * 60)
-                            input("\nPress Enter to return to tabs...")
-                            continue
-
                     # =======================================================
                     # 🖥️ VM ROUTING LOGIC
                     # =======================================================
@@ -5623,7 +6426,10 @@ def main() -> int:
                             continue
 
                         # --- 🚨 THE ALERT CONFIGURATOR FLOW 🚨 ---
-                        print(f"\n⚙️ Configure Alert Policy for VM: {selected_res.name}")
+                        print(f"\n{'━' * 68}")
+                        print(f"  🚨  ALERT POLICY CONFIGURATOR")
+                        print(f"  VM  ›  {selected_res.name}")
+                        print(f"{'━' * 68}")
 
                         metric_key = choose_metric_from_catalog_interactive(
                             selected_tab
@@ -5640,7 +6446,7 @@ def main() -> int:
                         elif metric_key == "custom_disk":
                             custom_data = configure_custom_disk_metric()
                         elif metric_key == "custom_network":
-                            custom_data = configure_custom_network_metric()
+                            custom_data = configure_custom_network_metric(creds, project_id, selected_res.name)
                         elif metric_key == "custom_process":
                             custom_data = configure_custom_process_metric()
                         else:
@@ -5672,26 +6478,98 @@ def main() -> int:
                                 metric_cfg["cross_series_reducer"] = custom_data[
                                     "cross_series_reducer"
                                 ]
-
                             operator = custom_data["operator"]
                             threshold_value = custom_data["threshold_value"]
                             duration_seconds = custom_data["duration_seconds"]
+
+                        # --- MULTI-VM SELECTION ---
+                        # User configured the metric once; now pick which VMs to apply it to.
+                        all_vms = inv.services.get("vm", [])
+                        target_vms = [selected_res]
+
+                        # Detect Ops Agent metrics — they require agent to have run on the VM.
+                        needs_ops_agent = "agent.googleapis.com" in metric_cfg.get(
+                            "gcp_metric", ""
+                        )
+
+                        if len(all_vms) > 1:
+                            print(f"\nApply this alert to:")
+                            print(f"  1: Just this VM ({selected_res.name})")
+                            print(f"  2: Select multiple VMs from inventory")
+                            scope_choice = input(
+                                "Enter choice [default: 1]: "
+                            ).strip()
+
+                            if scope_choice == "2":
+                                print(f"\nVMs in project {project_id}:")
+                                if needs_ops_agent:
+                                    print(
+                                        "  ⚠  This metric requires Ops Agent."
+                                        " TERMINATED VMs without the agent will fail."
+                                    )
+                                vm_idx_map: Dict[str, Any] = {}
+                                for i, vm in enumerate(all_vms, 1):
+                                    vm_idx_map[str(i)] = vm
+                                    marker = (
+                                        " ← current"
+                                        if str(vm.id) == str(selected_res.id)
+                                        else ""
+                                    )
+                                    warn = (
+                                        " ⚠ TERMINATED/No Ops Agent"
+                                        if needs_ops_agent
+                                        and (vm.status or "").upper()
+                                        not in ("RUNNING",)
+                                        else ""
+                                    )
+                                    print(
+                                        f"  {i}: {vm.name}"
+                                        f" [{vm.status or 'N/A'}]"
+                                        f" {vm.location or ''}{marker}{warn}"
+                                    )
+
+                                print(
+                                    "\nEnter VM numbers comma-separated (e.g. 1,3) or 'all':"
+                                )
+                                raw = input("Select VMs: ").strip()
+                                chosen_vms = []
+                                if raw.lower() == "all":
+                                    chosen_vms = list(all_vms)
+                                elif raw:
+                                    for part in raw.split(","):
+                                        part = part.strip()
+                                        if part in vm_idx_map:
+                                            chosen_vms.append(vm_idx_map[part])
+                                        else:
+                                            print(
+                                                f"  Warning: '{part}' is not a valid number, skipping."
+                                            )
+                                if chosen_vms:
+                                    target_vms = chosen_vms
 
                         # --- 🚨 FINAL SUMMARY AND PUSH TO GCP 🚨 ---
                         print("\n" + "=" * 50)
                         print("🚨 SUMMARY: ALERT TO BE CREATED IN GCP")
                         print("=" * 50)
-                        print(f"Resource: VM {selected_res.name}")
                         alert_name_display = metric_cfg.get(
                             "alert_name", metric_cfg["label"]
                         )
-                        print(f"Alert Name: {alert_name_display}")
-                        print(f"Metric:   {metric_cfg['label']}")
                         unit_str = (
                             f" {metric_cfg['unit']}" if metric_cfg["unit"] else ""
                         )
-                        print(f"Condition: {operator} {threshold_value}{unit_str}")
-                        print(f"Duration: {duration_seconds} seconds")
+                        print(f"Alert Name: {alert_name_display}")
+                        print(f"Metric:     {metric_cfg['label']}")
+                        print(f"Condition:  {operator} {threshold_value}{unit_str}")
+                        print(f"Duration:   {duration_seconds} seconds")
+                        print(f"Applying to {len(target_vms)} VM(s):")
+                        for v in target_vms:
+                            ops_warn = (
+                                "  ⚠ TERMINATED — alert may fail (no Ops Agent data)"
+                                if needs_ops_agent
+                                and (v.status or "").upper() not in ("RUNNING",)
+                                else ""
+                            )
+                            print(f"  - {v.name} [{v.status or 'N/A'}]{ops_warn}")
                         print("=" * 50)
 
                         confirm = (
@@ -5703,26 +6581,77 @@ def main() -> int:
                         )
 
                         if confirm == "y":
-                            final_policy_name = metric_cfg.get(
-                                "alert_name",
-                                f"Lens Auto-Alert | {selected_res.name} | {metric_cfg['label']}",
-                            )
+                            # Create one policy per VM so a failure on one
+                            # does not block the others.
                             print("\nPushing to Cloud Monitoring API...")
-                            try:
-                                VmAlertPolicyOrchestrator.create_vm_alert_policy(
-                                    credentials=creds,
-                                    project_id=project_id,
-                                    instance_ids=[str(selected_res.id)],
-                                    instance_names=[selected_res.name],
-                                    metric_key=metric_key,
-                                    threshold_value=threshold_value,
-                                    operator=operator,
-                                    duration_seconds=duration_seconds,
-                                    policy_display_name=final_policy_name,
+                            success_count = 0
+                            for v in target_vms:
+                                vm_policy_name = metric_cfg.get(
+                                    "alert_name",
+                                    f"Lens Auto-Alert | {v.name} | {metric_cfg['label']}",
                                 )
-                                print("\n✅ ALERT POLICY CREATED SUCCESSFULLY!")
-                            except Exception as e:
-                                print(f"\n❌ Failed to create alert policy: {e}")
+                                try:
+                                    VmAlertPolicyOrchestrator.create_vm_alert_policy(
+                                        credentials=creds,
+                                        project_id=project_id,
+                                        instance_ids=[str(v.id)],
+                                        instance_names=[v.name],
+                                        metric_key=metric_key,
+                                        threshold_value=threshold_value,
+                                        operator=operator,
+                                        duration_seconds=duration_seconds,
+                                        policy_display_name=vm_policy_name,
+                                    )
+                                    print(f"  ✅ Alert created for: {v.name}")
+                                    success_count += 1
+                                except Exception as e:
+                                    err_msg = str(e)
+                                    if "Cannot find metric" in err_msg:
+                                        print(
+                                            f"  ❌ {v.name}: Metric not found."
+                                            " This metric requires the Ops Agent."
+                                        )
+                                        zone = v.location  # e.g. "us-central1-a"
+                                        if zone:
+                                            ans = input(
+                                                f"\n  Install Ops Agent on '{v.name}' now via GCP OS Config? (y/n): "
+                                            ).strip().lower()
+                                            if ans == "y":
+                                                try:
+                                                    print(
+                                                        f"  📦 Deploying Ops Agent to {v.name} "
+                                                        f"(zone: {zone})..."
+                                                    )
+                                                    result = OpsAgentInstaller.install_on_vm(
+                                                        credentials=creds,
+                                                        project_id=project_id,
+                                                        zone=zone,
+                                                        instance_name=v.name,
+                                                    )
+                                                    print(
+                                                        f"  ✅ Installation queued successfully!\n"
+                                                        f"     Assignment : {result['assignment_id']}\n"
+                                                        f"     Operation  : {result['operation_name']}\n"
+                                                        f"\n"
+                                                        f"  ⏳ Allow 5–10 minutes for the agent to"
+                                                        f" install and start sending data.\n"
+                                                        f"  💡 Then come back and recreate this alert"
+                                                        f" — the metric will be available."
+                                                    )
+                                                except Exception as inst_err:
+                                                    print(
+                                                        f"  ❌ Ops Agent installation failed: {inst_err}"
+                                                    )
+                                        else:
+                                            print(
+                                                f"  ℹ️  Zone info not available for {v.name}."
+                                                " Open GCP Console → VM Instances → Install Ops Agent."
+                                            )
+                                    else:
+                                        print(f"  ❌ {v.name}: {err_msg}")
+                            print(
+                                f"\n✅ {success_count}/{len(target_vms)} alert policies created."
+                            )
                         else:
                             print("\nOperation cancelled.")
 

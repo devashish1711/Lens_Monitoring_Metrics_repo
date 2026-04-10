@@ -24,6 +24,7 @@ grpcio==1.78.0
 grpcio-status==1.71.2
 httplib2==0.31.2
 idna==3.11
+importlib_metadata==8.7.1
 jmespath==1.1.0
 numpy==2.4.2
 openpyxl==3.1.5
@@ -54,3 +55,4 @@ tzdata==2025.3
 uritemplate==4.2.0
 urllib3==2.6.3
 xlsxwriter==3.2.9
+zipp==3.23.0
